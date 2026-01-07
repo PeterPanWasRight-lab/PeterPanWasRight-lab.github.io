@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Markdown LaTeX 公式转换器 & AI 助手</title>
+    <style>
+        :root {
+            --primary-color: #2563eb;
+            --primary-hover: #1d4ed8;
+            --ai-color: #7c3aed; /* Violet for AI features */
+            --ai-hover: #6d28d9;
+            --bg-color: #f8fafc;
+            --card-bg: #ffffff;
+            --text-color: #1e293b;
+            --border-color: #e2e8f0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1200px;
+            background: var(--card-bg);
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            padding: 24px;
+            box-sizing: border-box;
+            position: relative;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 24px;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 16px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 1.5rem;
+            color: var(--primary-color);
+        }
+
+        p.subtitle {
+            margin: 8px 0 0;
+            color: #64748b;
+            font-size: 0.9rem;
+        }
+
+        /* API Key Section */
+        .api-section {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 15px;
+            align-items: center;
+        }
+
+        .api-input {
+            padding: 8px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            width: 250px;
+            font-size: 0.9rem;
+        }
+
+        .toolbar {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .divider {
+            width: 1px;
+            height: 24px;
+            background-color: var(--border-color);
+            margin: 0 8px;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+            background: white;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.9rem;
+        }
+
+        .btn:hover {
+            background-color: #f1f5f9;
+        }
+
+        .btn-primary {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+        }
+        .btn-primary:hover {
+            background-color: var(--primary-hover);
+        }
+
+        /* AI Button Styles */
+        .btn-ai {
+            background-color: var(--ai-color);
+            color: white;
+            border: none;
+        }
+        .btn-ai:hover {
+            background-color: var(--ai-hover);
+            box-shadow: 0 0 10px rgba(124, 58, 237, 0.3);
+        }
+
+        .editor-area {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            height: 60vh;
+        }
+
+        @media (max-width: 768px) {
+            .editor-area {
+                grid-template-columns: 1fr;
+                height: auto;
+            }
+        }
+
+        .panel {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            position: relative;
+        }
+
+        .panel-header {
+            font-weight: 600;
+            color: #475569;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        textarea {
+            width: 100%;
+            flex-grow: 1;
+            min-height: 300px;
+            padding: 16px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            resize: none;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.6;
+            outline: none;
+            box-sizing: border-box;
+        }
+
+        textarea:focus {
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+        }
+
+        .footer {
+            margin-top: 20px;
+            text-align: center;
+            font-size: 0.8rem;
+            color: #94a3b8;
+        }
+
+        /* Loading Overlay */
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255, 255, 255, 0.8);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            z-index: 10;
+            border-radius: 12px;
+        }
+        
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid var(--ai-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Modal for Explanation */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+        }
+
+        .modal {
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            max-width: 500px;
+            width: 90%;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+        }
+
+        .modal h3 {
+            margin-top: 0;
+            color: var(--ai-color);
+        }
+
+        .modal-content {
+            margin: 15px 0;
+            line-height: 1.6;
+            max-height: 60vh;
+            overflow-y: auto;
+        }
+
+        .modal-btn {
+            background: var(--border-color);
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            float: right;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="spinner"></div>
+        <div id="loadingText" style="color: var(--ai-color); font-weight: 500;">AI 思考中...</div>
+    </div>
+
+    <header>
+        <h1>Markdown 公式转换 & AI 助手</h1>
+        <p class="subtitle">标准转换：\[...\] \((...)\) → $$...$$ | ✨ AI 增强：智能纠错与解释</p>
+    </header>
+
+    <div class="api-section">
+        <input type="password" id="apiKeyInput" class="api-input" placeholder="输入 Gemini API Key (可选)">
+    </div>
+
+    <div class="toolbar">
+        <input type="file" id="fileInput" accept=".md,.txt" style="display: none;" onchange="handleFileUpload(this)">
+        <button class="btn" onclick="document.getElementById('fileInput').click()">
+            📂 导入
+        </button>
+        <button class="btn btn-primary" onclick="convertText()">
+            ⚡ 本地转换
+        </button>
+        
+        <div class="divider"></div>
+
+        <button class="btn btn-ai" onclick="aiFixFormat()">
+            ✨ AI 智能纠错
+        </button>
+        <button class="btn btn-ai" onclick="aiExplainSelection()">
+            ✨ 解释选中
+        </button>
+
+        <div class="divider"></div>
+
+        <button class="btn" onclick="downloadResult()">
+            💾 下载
+        </button>
+        <button class="btn" onclick="copyResult()">
+            📋 复制
+        </button>
+        <button class="btn" onclick="clearAll()" style="color: #ef4444; border-color: #fee2e2;">
+            🗑️ 清空
+        </button>
+    </div>
+
+    <div class="editor-area">
+        <div class="panel">
+            <div class="panel-header">
+                <span>输入 (旧格式/有误内容)</span>
+            </div>
+            <textarea id="inputArea" placeholder="在此粘贴 Markdown...&#10;&#10;示例:&#10;\[ E=mc^2 \]&#10;如果是复杂的或错误的 LaTeX，试试“✨ AI 智能纠错”"></textarea>
+        </div>
+        <div class="panel">
+            <div class="panel-header">
+                <span>输出 (新格式)</span>
+                <span id="statusMsg" style="font-size: 0.8rem; color: var(--primary-color); opacity: 0; transition: opacity 0.5s;">已转换!</span>
+            </div>
+            <textarea id="outputArea" placeholder="结果将显示在这里..."></textarea>
+        </div>
+    </div>
+    
+    <div class="footer">
+        本地转换 100% 离线运行。AI 功能需连接 Gemini API。
+    </div>
+</div>
+
+<!-- Modal -->
+<div class="modal-overlay" id="modalOverlay">
+    <div class="modal">
+        <h3>✨ Gemini AI 解析</h3>
+        <div class="modal-content" id="modalContent">
+            Loading...
+        </div>
+        <button class="modal-btn" onclick="closeModal()">关闭</button>
+    </div>
+</div>
+
+<script>
+    const inputArea = document.getElementById('inputArea');
+    const outputArea = document.getElementById('outputArea');
+    const statusMsg = document.getElementById('statusMsg');
+    const loadingOverlay = document.getElementById('loadingOverlay');
+    const modalOverlay = document.getElementById('modalOverlay');
+    const modalContent = document.getElementById('modalContent');
+    const apiKeyInput = document.getElementById('apiKeyInput');
+
+    // 预设的环境 Key (Canvas 环境自动注入)
+    const envApiKey = ""; 
+
+    // --- 基础功能 ---
+
+    // 核心转换逻辑 (正则)
+    function convertLogic(text) {
+        if (!text) return "";
+
+        // 1. 替换块级公式 \[ ... \] 为 $$...$$
+        // .trim() 去除公式内容首尾的空格和换行
+        let converted = text.replace(/\\\[([\s\S]*?)\\\]/g, (match, p1) => {
+            return `$$${p1.trim()}$$`;
+        });
+
+        // 2. 替换行内公式 \( ... \) 为 $$...$$
+        // .trim() 去除公式内容首尾的空格和换行
+        converted = converted.replace(/\\\(([\s\S]*?)\\\)/g, (match, p1) => {
+            return `$$${p1.trim()}$$`;
+        });
+
+        return converted;
+    }
+
+    function convertText() {
+        const text = inputArea.value;
+        const result = convertLogic(text);
+        outputArea.value = result;
+        showStatus("本地转换成功!");
+    }
+
+    function handleFileUpload(input) {
+        const file = input.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            inputArea.value = e.target.result;
+            convertText(); 
+            input.value = ''; 
+        };
+        reader.readAsText(file, 'UTF-8');
+    }
+
+    function downloadResult() {
+        const content = outputArea.value;
+        if (!content) { alert("没有可下载的内容！"); return; }
+        const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'converted_file.md';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    function copyResult() {
+        const content = outputArea.value;
+        if (!content) return;
+        outputArea.select();
+        document.execCommand('copy');
+        showStatus("已复制!");
+        window.getSelection().removeAllRanges();
+    }
+
+    function clearAll() {
+        if(confirm("确定清空？")) {
+            inputArea.value = "";
+            outputArea.value = "";
+        }
+    }
+
+    function showStatus(msg) {
+        statusMsg.textContent = msg;
+        statusMsg.style.opacity = 1;
+        setTimeout(() => { statusMsg.style.opacity = 0; }, 2000);
+    }
+
+    // --- AI 功能 (Gemini API) ---
+
+    function getApiKey() {
+        // 优先使用输入框的 Key，其次使用环境 Key
+        return apiKeyInput.value.trim() || envApiKey;
+    }
+
+    async function callGeminiAPI(prompt) {
+        const key = getApiKey();
+        if (!key) {
+            alert("请在上方输入框填入 Gemini API Key 才能使用 AI 功能。");
+            return null;
+        }
+
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${key}`;
+        
+        const payload = {
+            contents: [{ parts: [{ text: prompt }] }]
+        };
+
+        try {
+            // Exponential backoff logic
+            let response;
+            let attempt = 0;
+            const delays = [1000, 2000, 4000, 8000, 16000];
+
+            while (attempt <= 5) {
+                try {
+                    response = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    
+                    if (response.ok) break; // Success
+                    if (response.status === 429) { // Rate limit
+                        throw new Error("Rate limit");
+                    } else {
+                         const errData = await response.json();
+                         throw new Error(errData.error?.message || "API Error");
+                    }
+
+                } catch (e) {
+                    if (attempt === 5) throw e;
+                    await new Promise(resolve => setTimeout(resolve, delays[attempt]));
+                    attempt++;
+                }
+            }
+
+            const data = await response.json();
+            return data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+        } catch (error) {
+            console.error(error);
+            alert("AI 请求失败: " + error.message);
+            return null;
+        }
+    }
+
+    // 功能 1: AI 智能修复格式
+    async function aiFixFormat() {
+        const text = inputArea.value;
+        if (!text) { alert("请输入需要修复的内容"); return; }
+
+        loadingOverlay.style.display = 'flex';
+        document.getElementById('loadingText').innerText = "AI 正在修复 LaTeX 语法...";
+
+        const prompt = `
+        你是一个专业的 LaTeX 和 Markdown 编辑。请修复以下文本中的 Markdown 格式和 LaTeX 数学公式错误。
+        要求：
+        1. 将所有 LaTeX 公式标准化为 $$ ... $$ 包裹（无论是行内还是块级）。
+        2. 修复明显的 LaTeX 语法错误（如缺失的括号、拼写错误的命令）。
+        3. 保持原有文本内容不变，只修正格式。
+        4. 直接输出修复后的 Markdown 内容，不要包含任何解释或代码块标记。
+
+        待修复文本：
+        ${text}
+        `;
+
+        const result = await callGeminiAPI(prompt);
+        loadingOverlay.style.display = 'none';
+
+        if (result) {
+            outputArea.value = result;
+            showStatus("AI 修复完成!");
+        }
+    }
+
+    // 功能 2: 解释选中内容
+    async function aiExplainSelection() {
+        const start = inputArea.selectionStart;
+        const end = inputArea.selectionEnd;
+        const selectedText = inputArea.value.substring(start, end);
+
+        if (!selectedText) {
+            alert("请先在左侧输入框中【选中】一段公式或文本！");
+            return;
+        }
+
+        loadingOverlay.style.display = 'flex';
+        document.getElementById('loadingText').innerText = "AI 正在解析内容...";
+
+        const prompt = `
+        请用简洁易懂的中文解释以下数学公式或文本片段的含义：
+        "${selectedText}"
+        
+        如果是公式，请解释其中的变量含义和物理/数学意义。
+        `;
+
+        const result = await callGeminiAPI(prompt);
+        loadingOverlay.style.display = 'none';
+
+        if (result) {
+            modalContent.innerText = result;
+            modalOverlay.style.display = 'flex';
+        }
+    }
+
+    function closeModal() {
+        modalOverlay.style.display = 'none';
+    }
+
+    // 点击模态框外部关闭
+    modalOverlay.addEventListener('click', (e) => {
+        if (e.target === modalOverlay) closeModal();
+    });
+
+</script>
+
+</body>
+</html>
