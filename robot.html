@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>三连杆机械臂 SDH 参数建模</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #1a1a1a; color: white; }
+        #canvas-container { width: 100vw; height: 100vh; display: block; }
+        
+        #ui-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            width: 320px;
+            background: rgba(30, 30, 30, 0.9);
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            max-height: 90vh;
+            overflow-y: auto;
+            backdrop-filter: blur(5px);
+            border: 1px solid #444;
+        }
+
+        h1 { font-size: 18px; margin-top: 0; color: #4facfe; text-align: center; border-bottom: 1px solid #444; padding-bottom: 10px; }
+        h2 { font-size: 14px; color: #bbb; margin-top: 15px; border-left: 3px solid #4facfe; padding-left: 8px; }
+        
+        .control-group { margin-bottom: 15px; }
+        label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px; color: #ddd; }
+        input[type=range] { width: 100%; cursor: pointer; accent-color: #4facfe; }
+        
+        table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; text-align: center; }
+        th, td { border: 1px solid #555; padding: 6px 4px; }
+        th { background-color: #333; color: #4facfe; }
+        tr:nth-child(even) { background-color: #2a2a2a; }
+
+        .math-display {
+            font-family: 'Courier New', Courier, monospace;
+            background: #111;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-top: 5px;
+            line-height: 1.4;
+            color: #0f0;
+        }
+
+        .legend { display: flex; gap: 10px; font-size: 12px; margin-top: 10px; justify-content: center; }
+        .legend-item { display: flex; align-items: center; gap: 4px; }
+        .dot { width: 10px; height: 10px; border-radius: 50%; }
+
+        .note { font-size: 11px; color: #888; margin-top: 10px; font-style: italic; }
+    </style>
+</head>
+<body>
+
+<div id="ui-panel">
+    <h1>SDH 参数建模与仿真</h1>
+    
+    <div class="legend">
+        <div class="legend-item"><div class="dot" style="background:red"></div>X轴</div>
+        <div class="legend-item"><div class="dot" style="background:lime"></div>Y轴</div>
+        <div class="legend-item"><div class="dot" style="background:blue"></div>Z轴</div>
+    </div>
+
+    <h2>DH 参数表 (Standard)</h2>
+    <table id="dh-table">
+        <thead>
+            <tr>
+                <th>Link $i$</th>
+                <th>$a_{i-1}$<br>(长度)</th>
+                <th>$\alpha_{i-1}$<br>(扭转)</th>
+                <th>$d_i$<br>(偏置)</th>
+                <th>$\theta_i$<br>(角度)</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>1 (基座)</td>
+                <td>0</td>
+                <td>0°</td>
+                <td>0</td>
+                <td id="t1-val">0°</td>
+            </tr>
+            <tr>
+                <td>2 (肩部)</td>
+                <td>0</td>
+                <td>90°</td>
+                <td>0</td>
+                <td id="t2-val">0°</td>
+            </tr>
+            <tr>
+                <td>3 (肘部)</td>
+                <td>10</td>
+                <td>0°</td>
+                <td>0</td>
+                <td id="t3-val">0°</td>
+            </tr>
+        </tbody>
+    </table>
+    <div class="note">* 注：本模型简化了 d1 偏置以便观察结构。这里展示的是标准的连杆参数定义。</div>
+
+    <h2>关节控制</h2>
+    <div class="control-group">
+        <label>关节 1 ($\theta_1$) <span id="val-j1">0°</span></label>
+        <input type="range" id="slider-j1" min="-180" max="180" value="0">
+    </div>
+    <div class="control-group">
+        <label>关节 2 ($\theta_2$) <span id="val-j2">0°</span></label>
+        <input type="range" id="slider-j2" min="-90" max="90" value="0">
+    </div>
+    <div class="control-group">
+        <label>关节 3 ($\theta_3$) <span id="val-j3">0°</span></label>
+        <input type="range" id="slider-j3" min="-150" max="150" value="0">
+    </div>
+
+    <h2>末端执行器位置 (P)</h2>
+    <div class="math-display" id="end-effector-pos">
+        X: 0.00<br>Y: 0.00<br>Z: 0.00
+    </div>
+    
+    <h2>齐次变换矩阵 (${}^0T_3$)</h2>
+    <div class="math-display" id="matrix-display">
+        Calculating...
+    </div>
+</div>
+
+<div id="canvas-container"></div>
+
+<script>
+    // --- 场景设置 ---
+    const container = document.getElementById('canvas-container');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x202020);
+    
+    // 添加网格地面
+    const gridHelper = new THREE.GridHelper(40, 40, 0x444444, 0x333333);
+    scene.add(gridHelper);
+    // 增加坐标轴辅助 (世界坐标系)
+    const axesHelper = new THREE.AxesHelper(5);
+    scene.add(axesHelper);
+
+    // 摄像机
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(20, 20, 20);
+    camera.lookAt(0, 5, 0);
+
+    // 渲染器
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    container.appendChild(renderer.domElement);
+
+    // 灯光
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(10, 20, 10);
+    dirLight.castShadow = true;
+    scene.add(dirLight);
+
+    // 控制器
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    // --- 机器人构建 ---
+    
+    // 材质
+    const matBase = new THREE.MeshStandardMaterial({ color: 0x333333, metalness: 0.8, roughness: 0.2 });
+    const matLink1 = new THREE.MeshStandardMaterial({ color: 0x4facfe, metalness: 0.5, roughness: 0.5 });
+    const matLink2 = new THREE.MeshStandardMaterial({ color: 0x00f260, metalness: 0.5, roughness: 0.5 });
+    const matLink3 = new THREE.MeshStandardMaterial({ color: 0xff7e5f, metalness: 0.5, roughness: 0.5 });
+    const matJoint = new THREE.MeshStandardMaterial({ color: 0xaaaaaa });
+
+    // 辅助函数：创建坐标轴箭头
+    function createFrameAxes(length = 2) {
+        const axes = new THREE.AxesHelper(length);
+        // 加粗显示 (Three.js AxesHelper默认是线，这里为了清楚可以保持默认，或者加粗逻辑)
+        // 红色X, 绿色Y, 蓝色Z
+        return axes;
+    }
+
+    // 结构参数
+    const L1_height = 4; // 基座高度
+    const L2_length = 8; // 大臂长度
+    const L3_length = 6; // 小臂长度
+
+    // 1. 基座 (Base) - 固定
+    const baseGeo = new THREE.CylinderGeometry(2, 2.5, 1, 32);
+    const baseMesh = new THREE.Mesh(baseGeo, matBase);
+    baseMesh.position.y = 0.5;
+    scene.add(baseMesh);
+
+    // --- 关节 1 (Joint 1 / Frame 1) ---
+    // 旋转轴: Z0 (在世界坐标系中是 Y 轴)
+    // 根据 SDH, Frame 1 的原点通常在 Joint 2 的轴线上，或者 Joint 1 的中心
+    
+    const joint1Group = new THREE.Group();
+    joint1Group.position.y = 1; // 放在基座上面
+    scene.add(joint1Group);
+
+    // 连杆1模型 (L1) - 这是一个垂直连杆
+    const link1Geo = new THREE.CylinderGeometry(1, 1, L1_height, 16);
+    const link1Mesh = new THREE.Mesh(link1Geo, matLink1);
+    link1Mesh.position.y = L1_height / 2; // 向上延伸
+    joint1Group.add(link1Mesh);
+    
+    // Joint 1 坐标系显示 (Frame 0, 附着在转动之前)
+    // 实际上我们在Threejs里，joint1Group的旋转就是 theta1
+    // 为了可视化 SDH Frame 1，我们需要在变换后的位置画轴
+    
+    // --- 关节 2 (Joint 2 / Frame 2) ---
+    // Frame 1 -> Frame 2
+    // alpha1 = 90度 (绕x1旋转), a1 = 0, d2 = 0 (假设)
+    // 这里的物理结构：关节2是水平轴。
+    
+    const joint2Group = new THREE.Group();
+    // 位置：在连杆1的顶端
+    joint2Group.position.y = L1_height;
+    // 旋转：为了符合 SDH 的 alpha = 90度，我们需要旋转坐标系，使得新的 Z 轴是水平的
+    // 注意：ThreeJS 的旋转顺序 Euler 是 XYZ。
+    // 在 SDH 中，Z轴是旋转轴。
+    // 我们让 joint2Group 的局部 Z 轴指向屏幕外（或者右边），作为关节2的旋转轴。
+    // 物理上，关节2绕水平轴旋转。
+    
+    // 创建一个中间容器来处理 alpha 旋转
+    const j2AlphaGroup = new THREE.Group();
+    j2AlphaGroup.rotation.x = Math.PI / 2; // 绕X轴转90度，这样 Z 轴就变成水平了(指向-Y方向，或者根据右手定则)
+    joint1Group.add(j2AlphaGroup); // 附着在 Joint 1 上
+    
+    // 真正的 Joint 2 旋转组 (绕局部的 Z 轴旋转 theta2)
+    j2AlphaGroup.position.y = L1_height; // 移动到L1顶端
+    const joint2Rotator = new THREE.Group();
+    j2AlphaGroup.add(joint2Rotator);
+
+    // 连杆2模型 (L2)
+    const link2Geo = new THREE.BoxGeometry(L2_length, 0.8, 0.8);
+    const link2Mesh = new THREE.Mesh(link2Geo, matLink2);
+    // 几何中心修正：连杆沿着 X 轴延伸 (SDH中 a 是沿着 X 轴测量的)
+    link2Mesh.position.x = L2_length / 2; 
+    joint2Rotator.add(link2Mesh);
+
+    // --- 关节 3 (Joint 3 / Frame 3) ---
+    // Frame 2 -> Frame 3
+    // a2 = L2_length, alpha2 = 0
+    
+    const joint3Group = new THREE.Group();
+    joint3Group.position.x = L2_length; // 沿着 X2 轴移动 a2
+    joint2Rotator.add(joint3Group);
+
+    // 连杆3模型 (L3)
+    const link3Geo = new THREE.BoxGeometry(L3_length, 0.6, 0.6);
+    const link3Mesh = new THREE.Mesh(link3Geo, matLink3);
+    link3Mesh.position.x = L3_length / 2;
+    joint3Group.add(link3Mesh);
+
+    // --- 末端执行器 (End Effector) ---
+    const eeGeo = new THREE.SphereGeometry(0.5, 16, 16);
+    const eeMesh = new THREE.Mesh(eeGeo, new THREE.MeshBasicMaterial({color: 0xffff00}));
+    eeMesh.position.x = L3_length;
+    joint3Group.add(eeMesh);
+
+    // --- 添加坐标系可视化 ---
+    // Frame 0 (Base)
+    const frame0 = createFrameAxes(3);
+    scene.add(frame0); // 世界原点
+
+    // Frame 1 (After Joint 1 rotation, before Joint 2)
+    // 位于 Joint 2 的位置，但在旋转 Joint 2 之前
+    const frame1 = createFrameAxes(3);
+    // Frame 1 跟随 Joint 1 旋转，且位于 L1 顶端
+    // 它的 Z 轴应该指向 Joint 2 的旋转轴
+    // 根据 SDH: Z1 是 Joint 2 的轴。Joint 2 是水平轴。
+    // 所以我们需要在 visual 上手动放置这些 Frame Helper
+    
+    // 为了简单且正确地显示 SDH Frame，我们直接将 AxesHelper 挂载到对应的 Group 下
+    // 这样它们会跟随父级变换
+    
+    // Frame 1: 固连在 Joint 1 上，原点在 Joint 2 处
+    // Z1 轴是 Joint 2 的旋转轴。
+    // 在我们的构建中，j2AlphaGroup 已经旋转了90度，所以它的 Z 轴就是 Joint 2 的轴。
+    j2AlphaGroup.add(createFrameAxes(3)); // 这就是 Frame 1
+
+    // Frame 2: 固连在 Joint 2 上，原点在 Joint 3 处
+    // Z2 轴是 Joint 3 的旋转轴。
+    // 在我们的构建中，Joint 2 和 Joint 3 平行，所以 alpha2 = 0。
+    // 我们把坐标系放在 Joint 3 处
+    joint3Group.add(createFrameAxes(3)); // 这显示的是 Frame 2 (移动后的)
+
+    // Frame 3 (End Effector): 固连在 Joint 3 上
+    const frame3 = createFrameAxes(2);
+    frame3.position.x = L3_length;
+    joint3Group.add(frame3);
+
+    // --- UI 逻辑与数学计算 ---
+
+    const s1 = document.getElementById('slider-j1');
+    const s2 = document.getElementById('slider-j2');
+    const s3 = document.getElementById('slider-j3');
+    
+    const v1 = document.getElementById('val-j1');
+    const v2 = document.getElementById('val-j2');
+    const v3 = document.getElementById('val-j3');
+    
+    const t1_val = document.getElementById('t1-val');
+    const t2_val = document.getElementById('t2-val');
+    const t3_val = document.getElementById('t3-val');
+
+    const matrixDisplay = document.getElementById('matrix-display');
+    const posDisplay = document.getElementById('end-effector-pos');
+
+    function degToRad(deg) { return deg * Math.PI / 180; }
+
+    function updateRobot() {
+        const theta1 = parseFloat(s1.value);
+        const theta2 = parseFloat(s2.value);
+        const theta3 = parseFloat(s3.value);
+
+        // 更新 UI 文本
+        v1.textContent = theta1 + '°';
+        v2.textContent = theta2 + '°';
+        v3.textContent = theta3 + '°';
+        
+        t1_val.textContent = theta1 + '°';
+        t2_val.textContent = theta2 + '°';
+        t3_val.textContent = theta3 + '°';
+
+        // 更新 3D 模型
+        // Joint 1: 绕世界 Y (模型中的 vertical)
+        joint1Group.rotation.y = degToRad(theta1);
+        
+        // Joint 2: 绕局部 Z (模型中 j2AlphaGroup 后的 Z)
+        joint2Rotator.rotation.z = degToRad(theta2);
+
+        // Joint 3: 绕局部 Z
+        joint3Group.rotation.z = degToRad(theta3);
+
+        calculateKinematics(theta1, theta2, theta3);
+    }
+
+    function calculateKinematics(t1, t2, t3) {
+        // SDH Parameters for this model
+        // Link 1: a=0, alpha=90 (pi/2), d=L1_height, theta=t1
+        // Link 2: a=L2_length, alpha=0, d=0, theta=t2
+        // Link 3: a=L3_length, alpha=0, d=0, theta=t3
+        
+        // Using math.js for clean matrix multiplication
+        const c1 = Math.cos(degToRad(t1)), s1 = Math.sin(degToRad(t1));
+        const c2 = Math.cos(degToRad(t2)), s2 = Math.sin(degToRad(t2));
+        const c3 = Math.cos(degToRad(t3)), s3 = Math.sin(degToRad(t3));
+
+        // T01
+        // a=0, alpha=90, d=4
+        const T01 = [
+            [c1, 0,  s1, 0],
+            [s1, 0, -c1, 0],
+            [0,  1,  0,  L1_height],
+            [0,  0,  0,  1]
+        ];
+
+        // T12
+        // a=8, alpha=0, d=0
+        const T12 = [
+            [c2, -s2, 0, L2_length * c2],
+            [s2,  c2, 0, L2_length * s2],
+            [0,   0,  1, 0],
+            [0,   0,  0, 1]
+        ];
+
+        // T23
+        // a=6, alpha=0, d=0
+        const T23 = [
+            [c3, -s3, 0, L3_length * c3],
+            [s3,  c3, 0, L3_length * s3],
+            [0,   0,  1, 0],
+            [0,   0,  0, 1]
+        ];
+
+        // Multiply T03 = T01 * T12 * T23
+        const T02 = math.multiply(T01, T12);
+        const T03 = math.multiply(T02, T23);
+
+        // Display Matrix
+        let html = '';
+        T03.forEach(row => {
+            html += row.map(v => v.toFixed(2).padStart(6, ' ')).join('  ') + '<br>';
+        });
+        matrixDisplay.innerHTML = html;
+
+        // Display Position
+        const x = T03[0][3];
+        const y = T03[1][3];
+        const z = T03[2][3];
+        posDisplay.innerHTML = `X: ${x.toFixed(2)}<br>Y: ${y.toFixed(2)}<br>Z: ${z.toFixed(2)}`;
+    }
+
+    // 事件监听
+    s1.addEventListener('input', updateRobot);
+    s2.addEventListener('input', updateRobot);
+    s3.addEventListener('input', updateRobot);
+    
+    // 窗口大小调整
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // 动画循环
+    function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+    }
+
+    // 初始化
+    updateRobot();
+    animate();
+
+</script>
+</body>
+</html>
