@@ -1,0 +1,511 @@
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Play, Pause, RotateCcw, FastForward, Info, Settings, Map as MapIcon, TrendingUp } from 'lucide-react';
+
+/**
+ * 强化学习可视化 - 西湖寻宝 (RL West Lake)
+ * 基于用户提供的 MATLAB 代码逻辑重构为交互式 Web 应用
+ */
+
+// --- 常量定义 ---
+const GRID_SIZE = 6;
+const CELL_SIZE = 60;
+const ACTIONS = ['UP', 'DOWN', 'LEFT', 'RIGHT'];
+const ACTION_DELTAS = {
+  UP: { x: 0, y: -1 },
+  DOWN: { x: 0, y: 1 },
+  LEFT: { x: -1, y: 0 },
+  RIGHT: { x: 1, y: 0 },
+};
+
+// 地图定义: 0=空地, 1=起点, 2=终点, -1=障碍/水
+// 这是一个模拟西湖的简化地图，中间有水域
+const INITIAL_MAP = [
+  [1, 0, 0, 0, 0, 0],
+  [0, -1, -1, 0, 0, 0],
+  [0, -1, -1, -1, 0, 0],
+  [0, 0, 0, -1, 0, 0],
+  [0, 0, 0, -1, 0, 2],
+  [0, 0, 0, 0, 0, 0],
+];
+
+const REWARDS = {
+  GOAL: 100,
+  TRAP: -100,
+  STEP: -1,
+};
+
+// --- 辅助函数 ---
+
+// 初始化 Q 表 (State x Action)
+const initQTable = () => {
+  const table = {};
+  for (let y = 0; y < GRID_SIZE; y++) {
+    for (let x = 0; x < GRID_SIZE; x++) {
+      table[`${x},${y}`] = { UP: 0, DOWN: 0, LEFT: 0, RIGHT: 0 };
+    }
+  }
+  return table;
+};
+
+// 获取最大 Q 值和对应动作
+const getMaxQ = (qValues) => {
+  let maxVal = -Infinity;
+  let bestAction = null;
+  ACTIONS.forEach(action => {
+    if (qValues[action] > maxVal) {
+      maxVal = qValues[action];
+      bestAction = action;
+    }
+  });
+  return { maxVal, bestAction };
+};
+
+// Epsilon-Greedy 策略
+const chooseAction = (x, y, qTable, epsilon) => {
+  if (Math.random() < epsilon) {
+    // 探索
+    return ACTIONS[Math.floor(Math.random() * ACTIONS.length)];
+  } else {
+    // 利用
+    const stateKey = `${x},${y}`;
+    const { bestAction } = getMaxQ(qTable[stateKey]);
+    // 如果所有值都一样（比如初始状态），随机选一个
+    const allSame = ACTIONS.every(a => qTable[stateKey][a] === qTable[stateKey][ACTIONS[0]]);
+    if (allSame) return ACTIONS[Math.floor(Math.random() * ACTIONS.length)];
+    return bestAction;
+  }
+};
+
+const App = () => {
+  // --- State ---
+  const [map, setMap] = useState(INITIAL_MAP);
+  const [agentPos, setAgentPos] = useState({ x: 0, y: 0 });
+  const [qTable, setQTable] = useState(initQTable());
+  const [episode, setEpisode] = useState(0);
+  const [stepCount, setStepCount] = useState(0);
+  const [totalReward, setTotalReward] = useState(0);
+  const [history, setHistory] = useState([]); // 记录每轮的回报用于绘图
+  
+  // 控制参数
+  const [isRunning, setIsRunning] = useState(false);
+  const [speed, setSpeed] = useState(100); // ms per step
+  const [algorithm, setAlgorithm] = useState('Q-Learning'); // 'Q-Learning' or 'Sarsa'
+  
+  // 超参数
+  const [alpha, setAlpha] = useState(0.1); // 学习率
+  const [gamma, setGamma] = useState(0.9); // 折扣因子
+  const [epsilon, setEpsilon] = useState(0.1); // 探索率
+
+  // Sarsa 需要记录上一步的动作
+  const nextActionRef = useRef(null);
+  
+  // 引用以在 interval 中获取最新 state
+  const stateRef = useRef({
+    agentPos,
+    qTable,
+    episode,
+    stepCount,
+    totalReward,
+    map,
+    algorithm,
+    alpha,
+    gamma,
+    epsilon,
+    history
+  });
+
+  useEffect(() => {
+    stateRef.current = { 
+      agentPos, qTable, episode, stepCount, totalReward, map, algorithm, alpha, gamma, epsilon, history 
+    };
+  }, [agentPos, qTable, episode, stepCount, totalReward, map, algorithm, alpha, gamma, epsilon, history]);
+
+  // --- 核心 RL 逻辑 ---
+
+  const resetEpisode = useCallback(() => {
+    setAgentPos({ x: 0, y: 0 });
+    setStepCount(0);
+    setTotalReward(0);
+    nextActionRef.current = null; // Sarsa 重置
+  }, []);
+
+  const fullReset = () => {
+    setIsRunning(false);
+    setQTable(initQTable());
+    setEpisode(0);
+    setHistory([]);
+    resetEpisode();
+  };
+
+  const step = useCallback(() => {
+    const { 
+      agentPos: currPos, 
+      qTable: currQ, 
+      map: currMap, 
+      totalReward: currTotalReward, 
+      algorithm: currAlgo,
+      alpha: lr, 
+      gamma: df, 
+      epsilon: eps,
+      episode: currEp,
+      history: currHist
+    } = stateRef.current;
+
+    const stateKey = `${currPos.x},${currPos.y}`;
+    
+    // 1. 选择动作 (Action Selection)
+    let action;
+    if (currAlgo === 'Sarsa' && nextActionRef.current) {
+      action = nextActionRef.current;
+    } else {
+      action = chooseAction(currPos.x, currPos.y, currQ, eps);
+    }
+
+    // 2. 执行动作 (Execute Action)
+    const delta = ACTION_DELTAS[action];
+    let nextX = currPos.x + delta.x;
+    let nextY = currPos.y + delta.y;
+
+    // 边界检查 & 撞墙处理 (保持原地)
+    if (nextX < 0 || nextX >= GRID_SIZE || nextY < 0 || nextY >= GRID_SIZE) {
+      nextX = currPos.x;
+      nextY = currPos.y;
+    }
+
+    // 3. 观察奖励 (Observe Reward)
+    const cellType = currMap[nextY][nextX];
+    let reward = REWARDS.STEP;
+    let isTerminal = false;
+
+    if (cellType === 2) {
+      reward = REWARDS.GOAL;
+      isTerminal = true;
+    } else if (cellType === -1) {
+      reward = REWARDS.TRAP;
+      // 修改：掉进水里不再结束，而是允许进入（扣分），需要自己走出来
+      isTerminal = false; 
+    }
+
+    const nextStateKey = `${nextX},${nextY}`;
+    const newQ = { ...currQ };
+    const currentQVal = newQ[stateKey][action];
+
+    // 4. 更新 Q 值 (Update)
+    if (currAlgo === 'Q-Learning') {
+      // Q-Learning: Off-policy (总是贪婪地看下一步的最大值)
+      const { maxVal: maxNextQ } = getMaxQ(newQ[nextStateKey]);
+      const target = reward + (isTerminal ? 0 : df * maxNextQ);
+      newQ[stateKey][action] = currentQVal + lr * (target - currentQVal);
+    } else {
+      // Sarsa: On-policy (选择下一步实际会走的动作)
+      const nextAction = chooseAction(nextX, nextY, newQ, eps);
+      nextActionRef.current = nextAction; // 存下来给下一步用
+      const nextQVal = newQ[nextStateKey][nextAction];
+      
+      const target = reward + (isTerminal ? 0 : df * nextQVal);
+      newQ[stateKey][action] = currentQVal + lr * (target - currentQVal);
+    }
+
+    // 5. 更新状态
+    setQTable(newQ);
+    setTotalReward(currTotalReward + reward);
+    setStepCount(prev => prev + 1);
+
+    if (isTerminal) {
+      // 回合结束
+      setEpisode(ep => ep + 1);
+      setHistory([...currHist, currTotalReward + reward].slice(-50)); // 只保留最近50条
+      resetEpisode();
+    } else {
+      setAgentPos({ x: nextX, y: nextY });
+    }
+
+  }, [resetEpisode]);
+
+  // 自动运行循环
+  useEffect(() => {
+    let intervalId;
+    if (isRunning) {
+      intervalId = setInterval(step, speed);
+    }
+    return () => clearInterval(intervalId);
+  }, [isRunning, speed, step]);
+
+
+  // --- 渲染组件 ---
+
+  // 渲染单个格子
+  const renderCell = (x, y) => {
+    const cellType = map[y][x];
+    const isAgent = agentPos.x === x && agentPos.y === y;
+    const stateKey = `${x},${y}`;
+    const qValues = qTable[stateKey];
+    const { maxVal, bestAction } = getMaxQ(qValues);
+    
+    // 背景颜色：根据 maxQ 值决定红绿 (Value Map)
+    // 简单的归一化: -100 (红) 到 100 (绿)
+    let bgColor = 'bg-gray-100';
+    let opacity = 0.1;
+    
+    if (cellType === -1) {
+      bgColor = 'bg-red-200'; // 障碍物固定颜色
+      opacity = 1;
+    } else if (cellType === 2) {
+      bgColor = 'bg-yellow-200'; // 终点
+      opacity = 1;
+    } else {
+       // 根据价值渲染热力图
+       if (maxVal > 0) {
+         opacity = Math.min(maxVal / 100, 1);
+         bgColor = `rgba(34, 197, 94, ${0.1 + opacity * 0.9})`; // Green
+       } else if (maxVal < 0) {
+         opacity = Math.min(Math.abs(maxVal) / 100, 1);
+         bgColor = `rgba(239, 68, 68, ${0.1 + opacity * 0.9})`; // Red
+       }
+    }
+
+    // 策略箭头旋转角度
+    const rotation = {
+      UP: 'rotate-0',
+      RIGHT: 'rotate-90',
+      DOWN: 'rotate-180',
+      LEFT: '-rotate-90',
+    }[bestAction] || 'rotate-0';
+
+    return (
+      <div
+        key={`${x}-${y}`}
+        className="relative border border-gray-300 flex items-center justify-center text-xs transition-colors duration-200"
+        style={{ 
+          width: CELL_SIZE, 
+          height: CELL_SIZE,
+          backgroundColor: cellType !== -1 && cellType !== 2 ? bgColor : undefined,
+        }}
+      >
+        {/* 特殊地形渲染 */}
+        {cellType === -1 && <div className="absolute inset-0 bg-blue-300 opacity-50 flex items-center justify-center">💧</div>}
+        {cellType === 1 && <div className="absolute top-1 left-1 text-[10px] font-bold text-gray-500">START</div>}
+        {cellType === 2 && <div className="text-2xl">🚩</div>}
+
+        {/* 策略箭头 (Policy) - 只有非终止状态显示 */}
+        {cellType !== 2 && (maxVal !== 0) && (
+          <div className={`absolute inset-0 flex items-center justify-center text-gray-500 opacity-30 transform ${rotation} pointer-events-none`}>
+            ⬆
+          </div>
+        )}
+
+        {/* 智能体 */}
+        {isAgent && (
+          <div className="absolute z-10 text-3xl transition-all duration-100 transform scale-110">
+            🤠
+          </div>
+        )}
+        
+        {/* Value 显示 (始终显示) */}
+        <div className="absolute bottom-0.5 right-0.5 z-20 pointer-events-none">
+          <span className="text-[9px] font-mono font-bold text-slate-700 bg-white/60 px-0.5 rounded shadow-sm backdrop-blur-[1px]">
+            {maxVal.toFixed(1)}
+          </span>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 p-4 md:p-8 font-sans text-slate-800">
+      <header className="max-w-6xl mx-auto mb-8 flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-indigo-700 flex items-center gap-2">
+            <MapIcon className="w-8 h-8" />
+            西湖寻宝 RLWestLake
+          </h1>
+          <p className="text-slate-500 mt-1">基于强化学习的交互式寻路可视化 (Q-Learning / Sarsa)</p>
+        </div>
+        <div className="flex gap-4">
+           <a href="#" className="text-sm text-indigo-600 hover:underline">查看教程</a>
+        </div>
+      </header>
+
+      <main className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8">
+        
+        {/* 左侧：可视化网格 */}
+        <div className="lg:col-span-2 bg-white rounded-xl shadow-lg p-6 flex flex-col items-center">
+          <div className="mb-4 flex items-center justify-between w-full px-4">
+            <h2 className="text-xl font-semibold flex items-center gap-2">
+              <div className={`w-3 h-3 rounded-full ${isRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`}></div>
+              {isRunning ? '训练中...' : '准备就绪'}
+            </h2>
+            <div className="text-sm text-slate-500">
+              Episode: <span className="font-mono font-bold text-slate-800">{episode}</span>
+            </div>
+          </div>
+
+          <div 
+            className="grid gap-1 bg-gray-200 border-4 border-gray-700 p-1 rounded-md shadow-inner"
+            style={{ gridTemplateColumns: `repeat(${GRID_SIZE}, min-content)` }}
+          >
+            {map.map((row, y) => row.map((_, x) => renderCell(x, y)))}
+          </div>
+
+          <div className="mt-6 flex flex-wrap gap-4 items-center justify-center text-sm text-slate-600">
+            <div className="flex items-center gap-1"><span className="w-4 h-4 bg-yellow-200 border border-gray-300"></span> 终点 (+100)</div>
+            <div className="flex items-center gap-1"><span className="w-4 h-4 bg-blue-300 border border-gray-300"></span> 水域 (-100)</div>
+            <div className="flex items-center gap-1"><span className="w-4 h-4 bg-green-200 border border-gray-300"></span> 高价值区</div>
+            <div className="flex items-center gap-1"><span className="w-4 h-4 bg-red-200 border border-gray-300"></span> 低价值区</div>
+          </div>
+          
+          {/* 训练曲线简易图 */}
+          <div className="w-full mt-6 h-32 bg-slate-50 rounded border border-slate-200 relative overflow-hidden flex items-end px-2 gap-1">
+             {history.length === 0 && <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-sm">暂无训练数据</div>}
+             {history.map((val, idx) => {
+               // 归一化高度绘制条形图
+               const height = Math.min(Math.max((val + 200) / 400 * 100, 5), 100); 
+               const color = val > 0 ? 'bg-green-400' : 'bg-red-400';
+               return (
+                 <div key={idx} style={{height: `${height}%`, width: `${100/50}%`}} className={`${color} opacity-70 rounded-t-sm`} title={`Reward: ${val}`}></div>
+               );
+             })}
+          </div>
+          <div className="w-full text-center text-xs text-gray-400 mt-1">最近 50 个回合的总奖励趋势</div>
+        </div>
+
+        {/* 右侧：控制面板 */}
+        <div className="space-y-6">
+          
+          {/* 控制卡片 */}
+          <div className="bg-white rounded-xl shadow-lg p-6">
+            <div className="flex items-center gap-2 mb-4 text-slate-800 font-semibold border-b pb-2">
+              <Settings className="w-5 h-5" />
+              参数控制
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-600 mb-1">算法选择</label>
+                <div className="flex rounded-md shadow-sm" role="group">
+                  <button
+                    type="button"
+                    onClick={() => { if(!isRunning) setAlgorithm('Q-Learning'); }}
+                    className={`px-4 py-2 text-sm font-medium border rounded-l-lg flex-1 ${
+                      algorithm === 'Q-Learning' 
+                        ? 'bg-indigo-600 text-white border-indigo-600' 
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    Q-Learning
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { if(!isRunning) setAlgorithm('Sarsa'); }}
+                    className={`px-4 py-2 text-sm font-medium border rounded-r-lg flex-1 ${
+                      algorithm === 'Sarsa' 
+                        ? 'bg-indigo-600 text-white border-indigo-600' 
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    Sarsa
+                  </button>
+                </div>
+                <p className="text-xs text-slate-400 mt-1">
+                  {algorithm === 'Q-Learning' ? 'Off-policy: 大胆探索，学习最优路径。' : 'On-policy: 谨小慎微，学习安全路径。'}
+                </p>
+              </div>
+
+              <div>
+                <label className="flex justify-between text-sm font-medium text-slate-600 mb-1">
+                  <span>运行速度</span>
+                  <span>{speed}ms</span>
+                </label>
+                <input 
+                  type="range" min="10" max="500" step="10" 
+                  value={speed} 
+                  onChange={(e) => setSpeed(Number(e.target.value))}
+                  className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                />
+                <div className="flex justify-between text-xs text-gray-400 mt-1">
+                  <span>快</span>
+                  <span>慢</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 pt-2">
+                 {/* 超参数滑块 */}
+                 {[
+                   { label: '探索率 (Epsilon)', val: epsilon, set: setEpsilon, min: 0, max: 1, step: 0.05, tip: '越高越喜欢随机乱走' },
+                   { label: '学习率 (Alpha)', val: alpha, set: setAlpha, min: 0.01, max: 1, step: 0.05, tip: '更新Q值的步长' },
+                   { label: '折扣因子 (Gamma)', val: gamma, set: setGamma, min: 0.1, max: 0.99, step: 0.05, tip: '越重视未来的奖励' },
+                 ].map((param, idx) => (
+                   <div key={idx}>
+                     <label className="flex justify-between text-xs font-medium text-slate-600">
+                       <span title={param.tip}>{param.label}</span>
+                       <span>{param.val.toFixed(2)}</span>
+                     </label>
+                     <input 
+                        type="range" min={param.min} max={param.max} step={param.step}
+                        value={param.val}
+                        onChange={(e) => param.set(Number(e.target.value))}
+                        className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-400"
+                      />
+                   </div>
+                 ))}
+              </div>
+            </div>
+
+            <div className="mt-6 flex gap-2">
+              <button
+                onClick={() => setIsRunning(!isRunning)}
+                className={`flex-1 py-2 px-4 rounded-lg flex items-center justify-center gap-2 font-semibold shadow-md transition-colors ${
+                  isRunning 
+                    ? 'bg-amber-500 hover:bg-amber-600 text-white' 
+                    : 'bg-green-600 hover:bg-green-700 text-white'
+                }`}
+              >
+                {isRunning ? <><Pause className="w-4 h-4"/> 暂停</> : <><Play className="w-4 h-4"/> 开始训练</>}
+              </button>
+              
+              <button
+                onClick={fullReset}
+                className="py-2 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg shadow-sm border border-gray-300"
+                title="重置环境"
+              >
+                <RotateCcw className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+
+          {/* 信息卡片 */}
+          <div className="bg-white rounded-xl shadow-lg p-6 text-sm text-slate-600 space-y-3">
+             <h3 className="font-semibold text-slate-800 flex items-center gap-2">
+               <Info className="w-4 h-4" /> 状态面板
+             </h3>
+             <div className="flex justify-between border-b pb-2">
+               <span>当前步数:</span>
+               <span className="font-mono text-slate-800">{stepCount}</span>
+             </div>
+             <div className="flex justify-between border-b pb-2">
+               <span>当前回报:</span>
+               <span className={`font-mono font-bold ${totalReward < 0 ? 'text-red-500' : 'text-green-600'}`}>
+                 {totalReward}
+               </span>
+             </div>
+             <div className="flex justify-between items-center pt-1">
+                <span>坐标:</span>
+                <code className="bg-slate-100 px-2 py-1 rounded">({agentPos.x}, {agentPos.y})</code>
+             </div>
+          </div>
+        </div>
+      </main>
+
+      {/* 底部说明 */}
+      <footer className="max-w-6xl mx-auto mt-12 text-center text-slate-400 text-sm pb-8">
+        <p>© 2026 WestLake RL Lab. 基于您上传的 MATLAB 代码逻辑重构。</p>
+        <p className="mt-2">
+          Tip: Q-Learning 在这种有惩罚地形（水域）的环境下，通常会学习出紧贴水边行走的最短路径（险路），
+          而 Sarsa 因为考虑了探索时的随机性，通常会学习出离水远一点的安全路径。
+        </p>
+      </footer>
+    </div>
+  );
+};
+
+export default App;
