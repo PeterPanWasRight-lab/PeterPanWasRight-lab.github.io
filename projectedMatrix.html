@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>三维空间正交投影可视化</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Three.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- OrbitControls -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <!-- MathJax for rendering formulas -->
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #canvas-container { width: 70%; height: 100vh; float: left; position: relative; background: #f0f2f5; }
+        #sidebar { width: 30%; height: 100vh; float: right; background: #ffffff; overflow-y: auto; padding: 20px; box-shadow: -2px 0 5px rgba(0,0,0,0.1); border-left: 1px solid #ddd; }
+        .input-group { margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        .input-row { display: flex; align-items: center; margin-bottom: 5px; }
+        .input-label { width: 30px; font-weight: bold; color: #555; }
+        input[type="number"] { width: 60px; padding: 4px; margin-right: 5px; border: 1px solid #ccc; border-radius: 4px; }
+        .vector-legend { display: inline-block; width: 12px; height: 12px; margin-right: 5px; border-radius: 50%; }
+        .result-box { background: #f8fafc; padding: 10px; border-radius: 6px; margin-bottom: 10px; font-size: 0.9em; border: 1px solid #e2e8f0; }
+        h2 { color: #1e293b; font-size: 1.25rem; font-weight: 700; margin-bottom: 1rem; border-bottom: 2px solid #3b82f6; padding-bottom: 0.5rem; }
+        h3 { color: #334155; font-size: 1rem; font-weight: 600; margin-top: 1rem; margin-bottom: 0.5rem; }
+        
+        /* Loading Overlay */
+        #loading { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: white; z-index: 999; display: flex; justify-content: center; align-items: center; font-size: 1.5rem; color: #666; }
+    </style>
+</head>
+<body>
+
+    <!-- 3D Canvas Area -->
+    <div id="canvas-container"></div>
+
+    <!-- Sidebar Controls & Info -->
+    <div id="sidebar">
+        <h2>参数控制</h2>
+        
+        <div class="input-group">
+            <h3><span class="vector-legend" style="background:blue;"></span>平面基向量 v1</h3>
+            <div class="input-row">
+                <span class="input-label">X:</span> <input type="number" id="v1x" value="2" step="0.5" onchange="updateScene()">
+                <span class="input-label">Y:</span> <input type="number" id="v1y" value="1" step="0.5" onchange="updateScene()">
+                <span class="input-label">Z:</span> <input type="number" id="v1z" value="0" step="0.5" onchange="updateScene()">
+            </div>
+        </div>
+
+        <div class="input-group">
+            <h3><span class="vector-legend" style="background:blue;"></span>平面基向量 v2</h3>
+            <div class="input-row">
+                <span class="input-label">X:</span> <input type="number" id="v2x" value="0" step="0.5" onchange="updateScene()">
+                <span class="input-label">Y:</span> <input type="number" id="v2y" value="1" step="0.5" onchange="updateScene()">
+                <span class="input-label">Z:</span> <input type="number" id="v2z" value="2" step="0.5" onchange="updateScene()">
+            </div>
+        </div>
+
+        <div class="input-group">
+            <h3><span class="vector-legend" style="background:red;"></span>原始向量 x</h3>
+            <div class="input-row">
+                <span class="input-label">X:</span> <input type="number" id="xx" value="2" step="0.5" onchange="updateScene()">
+                <span class="input-label">Y:</span> <input type="number" id="xy" value="-1" step="0.5" onchange="updateScene()">
+                <span class="input-label">Z:</span> <input type="number" id="xz" value="3" step="0.5" onchange="updateScene()">
+            </div>
+        </div>
+
+        <h2>计算结果</h2>
+        <div id="calculations">
+            <div class="result-box">
+                <strong><span style="color:green">●</span> 投影向量 p (Proj x):</strong><br>
+                <span id="res-p">Calculating...</span>
+            </div>
+            <div class="result-box">
+                <strong><span style="color:magenta">●</span> 残差向量 e (Error):</strong><br>
+                <span id="res-e">Calculating...</span>
+            </div>
+            
+            <h3>正交性验证 (点积)</h3>
+            <div class="result-box">
+                \( e \cdot v_1 = \) <span id="dot-ev1">0</span><br>
+                \( e \cdot v_2 = \) <span id="dot-ev2">0</span>
+            </div>
+
+            <h3>勾股定理验证 (模长平方)</h3>
+            <div class="result-box">
+                \( ||x||^2 = \) <span id="norm-x">0</span><br>
+                \( ||p||^2 + ||e||^2 = \) <span id="norm-pe">0</span>
+            </div>
+        </div>
+
+        <div style="margin-top:20px; font-size:0.85em; color:#666; line-height:1.5;">
+            <p><strong>原理说明：</strong></p>
+            <p>1. 绿线 \(p\) 是红线 \(x\) 在由 \(v_1, v_2\) 张成的平面上的正交投影。</p>
+            <p>2. 紫线 \(e\) 是垂直于平面的分量 (误差)。</p>
+            <p>3. 投影矩阵公式: \( P = A(A^T A)^{-1} A^T \)。</p>
+            <p>4. <strong>P 的性质</strong>: \( P^2 = P \) (幂等性，投影两次等于投影一次) 且 \( P^T = P \) (对称性)。</p>
+        </div>
+    </div>
+
+    <script>
+        // --- 全局变量 ---
+        let scene, camera, renderer, controls;
+        let arrowHelpers = [];
+        let planeMesh, gridHelper, axisHelper;
+        let textSprites = [];
+
+        // --- 核心数学逻辑 (提前定义，解决 ReferenceError) ---
+        // 简单的矩阵运算类（为了不依赖庞大的外部库）
+        const MathUtils = {
+            // 向量点积
+            dot: (a, b) => a.x * b.x + a.y * b.y + a.z * b.z,
+            
+            // 向量加法
+            add: (a, b) => ({ x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }),
+            
+            // 向量减法
+            sub: (a, b) => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z }),
+            
+            // 向量数乘
+            scale: (v, s) => ({ x: v.x * s, y: v.y * s, z: v.z * s }),
+            
+            // 向量模长平方
+            normSq: (v) => v.x*v.x + v.y*v.y + v.z*v.z,
+
+            // 矩阵向量乘法 (3x3 * 3x1)
+            matVecMul: (m, v) => ({
+                x: m[0][0]*v.x + m[0][1]*v.y + m[0][2]*v.z,
+                y: m[1][0]*v.x + m[1][1]*v.y + m[1][2]*v.z,
+                z: m[2][0]*v.x + m[2][1]*v.y + m[2][2]*v.z
+            }),
+
+            // 矩阵乘法 (A * B) - 这里的A是3x2, B是2x3，结果3x3
+            // 针对本题：A = [v1, v2] (3x2矩阵)
+            // 我们需要计算 P = A * inv(A'A) * A'
+            // 为了简化，我们直接手动解这个线性代数过程
+            solveProjection: (v1, v2, x) => {
+                // A = [v1, v2]
+                // M = A'A = [ v1·v1  v1·v2 ]
+                //           [ v2·v1  v2·v2 ]
+                
+                const d11 = MathUtils.dot(v1, v1);
+                const d12 = MathUtils.dot(v1, v2);
+                const d21 = MathUtils.dot(v2, v1);
+                const d22 = MathUtils.dot(v2, v2);
+
+                // 计算 M 的逆矩阵 M_inv
+                // inv([a b; c d]) = 1/(ad-bc) * [d -b; -c a]
+                const det = d11 * d22 - d12 * d21;
+                
+                if (Math.abs(det) < 1e-10) {
+                    alert("基向量线性相关，无法构成平面！");
+                    return null;
+                }
+
+                const invDet = 1.0 / det;
+                const mInv11 = d22 * invDet;
+                const mInv12 = -d12 * invDet;
+                const mInv21 = -d21 * invDet;
+                const mInv22 = d11 * invDet;
+
+                // 计算投影系数 c = M_inv * (A' * x)
+                // A' * x = [v1·x, v2·x]'
+                const b1 = MathUtils.dot(v1, x);
+                const b2 = MathUtils.dot(v2, x);
+
+                const c1 = mInv11 * b1 + mInv12 * b2;
+                const c2 = mInv21 * b1 + mInv22 * b2;
+
+                // p = c1*v1 + c2*v2
+                const p = MathUtils.add(MathUtils.scale(v1, c1), MathUtils.scale(v2, c2));
+                
+                return p;
+            }
+        };
+
+        function init() {
+            // 1. 场景设置
+            const container = document.getElementById('canvas-container');
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf0f2f5);
+
+            // 2. 相机
+            camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 100);
+            camera.position.set(8, 8, 8);
+            camera.up.set(0, 0, 1); // Z轴向上，符合Matlab习惯
+            
+            // 3. 渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.shadowMap.enabled = true;
+            container.appendChild(renderer.domElement);
+
+            // 4. 控制器
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+
+            // 5. 辅助元素 (坐标轴和网格)
+            // 坐标轴: R=X, G=Y, B=Z
+            axisHelper = new THREE.AxesHelper(5);
+            scene.add(axisHelper);
+            
+            // 网格 (XY平面) - 为了清晰，我们画一个稍微淡一点的底面网格
+            const groundGrid = new THREE.GridHelper(20, 20, 0xdddddd, 0xeeeeee);
+            groundGrid.rotation.x = Math.PI / 2; // 旋转使其平行于XY平面
+            scene.add(groundGrid);
+
+            // 灯光
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(5, 10, 7);
+            scene.add(dirLight);
+
+            // 监听窗口大小变化
+            window.addEventListener('resize', onWindowResize, false);
+        }
+
+        function updateScene() {
+            // 1. 获取输入数据
+            const v1 = {
+                x: parseFloat(document.getElementById('v1x').value),
+                y: parseFloat(document.getElementById('v1y').value),
+                z: parseFloat(document.getElementById('v1z').value)
+            };
+            const v2 = {
+                x: parseFloat(document.getElementById('v2x').value),
+                y: parseFloat(document.getElementById('v2y').value),
+                z: parseFloat(document.getElementById('v2z').value)
+            };
+            const xVal = {
+                x: parseFloat(document.getElementById('xx').value),
+                y: parseFloat(document.getElementById('xy').value),
+                z: parseFloat(document.getElementById('xz').value)
+            };
+
+            // 2. 清除旧对象
+            arrowHelpers.forEach(obj => scene.remove(obj));
+            arrowHelpers = [];
+            textSprites.forEach(obj => scene.remove(obj));
+            textSprites = [];
+            if (planeMesh) scene.remove(planeMesh);
+
+            // 3. 计算数学结果
+            const pVal = MathUtils.solveProjection(v1, v2, xVal);
+            if (!pVal) return;
+            
+            const eVal = MathUtils.sub(xVal, pVal);
+
+            // 4. 更新UI数值显示
+            updateUI(xVal, pVal, eVal, v1, v2);
+
+            // 5. 绘制三维元素
+
+            // A. 绘制基向量 v1, v2 (蓝色)
+            drawFatArrow(new THREE.Vector3(0,0,0), new THREE.Vector3(v1.x, v1.y, v1.z), 0x0000ff, "v1");
+            drawFatArrow(new THREE.Vector3(0,0,0), new THREE.Vector3(v2.x, v2.y, v2.z), 0x0000ff, "v2");
+
+            // B. 绘制平面 (由v1, v2张成)
+            drawPlane(v1, v2);
+
+            // C. 绘制原始向量 x (红色)
+            drawFatArrow(new THREE.Vector3(0,0,0), new THREE.Vector3(xVal.x, xVal.y, xVal.z), 0xff0000, "x");
+
+            // D. 绘制投影向量 p (绿色)
+            drawFatArrow(new THREE.Vector3(0,0,0), new THREE.Vector3(pVal.x, pVal.y, pVal.z), 0x00aa00, "p");
+
+            // E. 绘制误差向量 e (从p指向x) (紫红色)
+            drawFatArrow(new THREE.Vector3(pVal.x, pVal.y, pVal.z), new THREE.Vector3(eVal.x, eVal.y, eVal.z), 0xff00ff, "e");
+
+            // F. 辅助虚线 (形成矩形投影感)
+            drawDashedLine(new THREE.Vector3(xVal.x, xVal.y, xVal.z), new THREE.Vector3(pVal.x, pVal.y, pVal.z)); // x到p的连线其实就是e，这里画条细线加强视觉
+            drawProjectionLines(pVal); // 投影点到坐标轴的连线
+        }
+
+        // --- 绘图辅助函数 ---
+
+        function drawFatArrow(origin, vector, color, labelText) {
+            const dir = vector.clone().normalize();
+            const length = vector.length();
+            
+            if (length < 0.01) return;
+
+            // 箭头由圆柱和圆锥组成
+            const arrowHeadLen = Math.min(0.5, length * 0.2);
+            const arrowShaftLen = length - arrowHeadLen;
+            const shaftRadius = 0.05;
+            const headRadius = 0.15;
+
+            // 材质
+            const material = new THREE.MeshPhongMaterial({ color: color });
+
+            // 箭杆
+            const shaftGeo = new THREE.CylinderGeometry(shaftRadius, shaftRadius, arrowShaftLen, 12);
+            shaftGeo.translate(0, arrowShaftLen / 2, 0);
+            const shaft = new THREE.Mesh(shaftGeo, material);
+
+            // 箭头
+            const headGeo = new THREE.ConeGeometry(headRadius, arrowHeadLen, 12);
+            headGeo.translate(0, arrowShaftLen + arrowHeadLen / 2, 0);
+            const head = new THREE.Mesh(headGeo, material);
+
+            // 组合
+            const arrow = new THREE.Group();
+            arrow.add(shaft);
+            arrow.add(head);
+
+            // 旋转对齐方向
+            // Cylinder默认朝Y+，我们需要旋转它朝向dir
+            arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+            arrow.position.copy(origin);
+
+            scene.add(arrow);
+            arrowHelpers.push(arrow);
+
+            // 添加标签
+            if (labelText) {
+                const labelPos = origin.clone().add(vector).multiplyScalar(1.05); // 稍微由于箭头顶端一点
+                if (labelText === 'e') {
+                    // 对于e，标签放在中间好一点
+                    labelPos.copy(origin).add(vector.clone().multiplyScalar(0.5)).add(new THREE.Vector3(0.2,0.2,0.2));
+                }
+                createLabel(labelText, labelPos, color);
+            }
+        }
+
+        function drawPlane(v1, v2) {
+            // 创建一个基于 v1 和 v2 的平面网格
+            // 范围 s, t in [-2, 2]
+            const range = 2;
+            const geom = new THREE.BufferGeometry();
+            const vertices = [];
+            
+            // 计算平面的四个角点
+            // P = s*v1 + t*v2
+            const c1 = addVec(scaleVec(v1, -range), scaleVec(v2, -range));
+            const c2 = addVec(scaleVec(v1, range), scaleVec(v2, -range));
+            const c3 = addVec(scaleVec(v1, -range), scaleVec(v2, range));
+            const c4 = addVec(scaleVec(v1, range), scaleVec(v2, range));
+
+            // 两个三角形组成矩形
+            vertices.push(c1.x, c1.y, c1.z);
+            vertices.push(c2.x, c2.y, c2.z);
+            vertices.push(c3.x, c3.y, c3.z);
+            
+            vertices.push(c2.x, c2.y, c2.z);
+            vertices.push(c4.x, c4.y, c4.z);
+            vertices.push(c3.x, c3.y, c3.z);
+
+            geom.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+            
+            const mat = new THREE.MeshBasicMaterial({ 
+                color: 0x88ccff, 
+                side: THREE.DoubleSide, 
+                transparent: true, 
+                opacity: 0.3,
+                depthWrite: false // 防止遮挡半透明物体
+            });
+            
+            planeMesh = new THREE.Mesh(geom, mat);
+            scene.add(planeMesh);
+            
+            // 添加平面的边缘线使其更清晰
+            const edges = new THREE.EdgesGeometry(geom);
+            const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x4488cc, opacity: 0.5, transparent: true }));
+            planeMesh.add(line);
+        }
+
+        function drawDashedLine(p1, p2) {
+            const geometry = new THREE.BufferGeometry().setFromPoints([p1, p2]);
+            const material = new THREE.LineDashedMaterial({
+                color: 0x000000,
+                dashSize: 0.2,
+                gapSize: 0.1,
+                opacity: 0.5,
+                transparent: true
+            });
+            const line = new THREE.Line(geometry, material);
+            line.computeLineDistances();
+            scene.add(line);
+            arrowHelpers.push(line);
+        }
+
+        function drawProjectionLines(p) {
+            // 绘制点p到XY平面，再到轴的垂线 (Matlab代码里的黑色虚线)
+            const p3 = new THREE.Vector3(p.x, p.y, p.z);
+            const pxy = new THREE.Vector3(p.x, p.y, 0);
+            const px = new THREE.Vector3(p.x, 0, 0);
+            const py = new THREE.Vector3(0, p.y, 0);
+            const pz = new THREE.Vector3(0, 0, p.z); // Z轴上的投影
+
+            // p 到 pxy
+            drawDashedLine(p3, pxy);
+            // pxy 到 px
+            drawDashedLine(pxy, px);
+            // pxy 到 py
+            drawDashedLine(pxy, py);
+            // p 到 pz
+            drawDashedLine(p3, pz);
+        }
+
+        // --- 辅助数学函数 (JS对象操作) ---
+        function scaleVec(v, s) { return { x: v.x*s, y: v.y*s, z: v.z*s }; }
+        function addVec(a, b) { return { x: a.x+b.x, y: a.y+b.y, z: a.z+b.z }; }
+
+        // --- 标签系统 (Canvas Sprites) ---
+        function createLabel(text, position, colorHex) {
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.width = 256;
+            canvas.height = 128; // 宽一点防止截断
+            
+            const colorStr = '#' + new THREE.Color(colorHex).getHexString();
+
+            context.font = "Bold 40px Arial";
+            context.fillStyle = colorStr;
+            context.textAlign = "center";
+            context.fillText(text, 128, 64);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            const spriteMaterial = new THREE.SpriteMaterial({ map: texture, depthTest: false });
+            const sprite = new THREE.Sprite(spriteMaterial);
+            
+            sprite.position.copy(position);
+            sprite.scale.set(2, 1, 1); // 缩放Sprite大小
+            
+            scene.add(sprite);
+            textSprites.push(sprite);
+        }
+
+        // --- UI 更新 ---
+        function updateUI(x, p, e, v1, v2) {
+            // 格式化函数
+            const fmt = (n) => n.toFixed(2);
+            const fmtV = (v) => `[${fmt(v.x)}, ${fmt(v.y)}, ${fmt(v.z)}]`;
+
+            document.getElementById('res-p').innerText = fmtV(p);
+            document.getElementById('res-e').innerText = fmtV(e);
+
+            // 正交验证
+            const dotEv1 = MathUtils.dot(e, v1);
+            const dotEv2 = MathUtils.dot(e, v2);
+            document.getElementById('dot-ev1').innerText = dotEv1.toFixed(6);
+            document.getElementById('dot-ev2').innerText = dotEv2.toFixed(6);
+
+            // 勾股验证
+            const normXSq = MathUtils.normSq(x);
+            const normPSq = MathUtils.normSq(p);
+            const normESq = MathUtils.normSq(e);
+            const sumSq = normPSq + normESq;
+
+            document.getElementById('norm-x').innerText = normXSq.toFixed(4);
+            document.getElementById('norm-pe').innerText = `${normPSq.toFixed(4)} + ${normESq.toFixed(4)} = ${sumSq.toFixed(4)}`;
+
+            // 重新渲染公式
+            if (window.MathJax) {
+                MathJax.typesetPromise();
+            }
+        }
+
+        function onWindowResize() {
+            const container = document.getElementById('canvas-container');
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        // --- 执行初始化 (Moved to bottom) ---
+        init();
+        animate();
+        updateScene(); // 首次计算渲染
+
+    </script>
+</body>
+</html>
