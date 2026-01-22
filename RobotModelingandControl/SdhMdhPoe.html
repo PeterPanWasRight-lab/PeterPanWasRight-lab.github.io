@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>机器人运动学建模教学平台</title>
+    
+    <!-- 引入 Tailwind CSS (样式) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 引入 Lucide Icons (图标) -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- 配置 Three.js 导入映射 -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+        
+        /* 自定义滚动条样式 */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        
+        /* 标签页激活样式 */
+        .tab-btn.active {
+            border-bottom-color: #2563eb; /* blue-600 */
+            color: #2563eb;
+            background-color: #eff6ff; /* blue-50 */
+        }
+    </style>
+</head>
+<body class="flex flex-col h-screen bg-gray-50 text-slate-800">
+
+    <!-- 顶部导航栏 -->
+    <header class="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between shadow-sm z-10 shrink-0">
+        <div class="flex items-center space-x-3">
+            <div class="bg-blue-600 p-2 rounded-lg text-white">
+                <i data-lucide="layers" class="w-6 h-6"></i>
+            </div>
+            <h1 class="text-xl font-bold text-slate-800">机器人运动学建模教学</h1>
+        </div>
+        <div class="text-sm text-slate-500 hidden md:block">
+            MDH vs SDH vs Screw Theory Visualization
+        </div>
+    </header>
+
+    <!-- 主内容区 -->
+    <div class="flex flex-1 overflow-hidden relative">
+        
+        <!-- 左侧边栏 -->
+        <div class="w-full md:w-1/2 lg:w-5/12 border-r border-gray-200 bg-white flex flex-col z-10 shadow-lg h-full">
+            
+            <!-- 标签页切换 (固定在顶部) -->
+            <div class="flex border-b border-gray-200 bg-white z-10 shrink-0" id="tabs-container">
+                <button onclick="window.switchTab('intro')" class="tab-btn active flex-1 py-3 text-sm font-medium border-b-2 border-transparent text-slate-600 hover:bg-gray-50 transition-colors" data-tab="intro">简介</button>
+                <button onclick="window.switchTab('sdh')" class="tab-btn flex-1 py-3 text-sm font-medium border-b-2 border-transparent text-slate-600 hover:bg-gray-50 transition-colors" data-tab="sdh">SDH</button>
+                <button onclick="window.switchTab('mdh')" class="tab-btn flex-1 py-3 text-sm font-medium border-b-2 border-transparent text-slate-600 hover:bg-gray-50 transition-colors" data-tab="mdh">MDH</button>
+                <button onclick="window.switchTab('poe')" class="tab-btn flex-1 py-3 text-sm font-medium border-b-2 border-transparent text-slate-600 hover:bg-gray-50 transition-colors" data-tab="poe">旋量法</button>
+                <button onclick="window.switchTab('compare')" class="tab-btn flex-1 py-3 text-sm font-medium border-b-2 border-transparent text-slate-600 hover:bg-gray-50 transition-colors" data-tab="compare">对比</button>
+            </div>
+
+            <!-- 教学内容区 (可滚动) -->
+            <div class="flex-1 overflow-y-auto p-6 space-y-6" id="tab-content">
+                <!-- 内容将通过 JS 动态注入 -->
+            </div>
+
+            <!-- 底部：实时状态面板 (固定在底部) -->
+            <div class="border-t border-gray-200 bg-slate-50 p-4 shrink-0 overflow-y-auto max-h-[45vh]">
+                <div class="flex items-center gap-2 mb-3">
+                    <i data-lucide="activity" class="w-4 h-4 text-blue-600"></i>
+                    <span class="text-sm font-bold text-slate-800">实时运动学状态</span>
+                </div>
+                
+                <div class="space-y-4">
+                    <!-- 末端位姿 -->
+                    <div>
+                        <div class="text-xs font-bold text-slate-500 mb-2 flex items-center gap-1">
+                            <i data-lucide="move-3d" class="w-3 h-3"></i> 末端位姿 (World)
+                        </div>
+                        <div class="grid grid-cols-2 gap-2 text-[10px] font-mono bg-white p-2 rounded border border-slate-200 shadow-sm">
+                            <div class="space-y-1" id="ee-pos">
+                                <div class="text-slate-400">Position</div>
+                                <!-- JS 注入 -->
+                            </div>
+                            <div class="space-y-1" id="ee-rot">
+                                <div class="text-slate-400">Euler (RPY)</div>
+                                <!-- JS 注入 -->
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 矩阵/旋量 数据容器 -->
+                    <div id="kinematics-data-container">
+                        <!-- JS 注入 -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 右侧：3D 视图 -->
+        <div class="flex-1 relative bg-slate-100 h-full">
+            <div id="canvas-container" class="w-full h-full cursor-move"></div>
+
+            <!-- 浮动控制条 (关节滑块) -->
+            <div class="absolute bottom-4 left-4 right-4 md:right-auto md:w-80 bg-white/90 backdrop-blur p-4 rounded-xl shadow-lg border border-gray-200">
+                <div class="flex items-center gap-2 mb-3 text-sm font-bold text-slate-700">
+                    <i data-lucide="refresh-cw" class="w-4 h-4"></i> 关节控制 (rad)
+                </div>
+                
+                <!-- Joint 1 -->
+                <div class="mb-2">
+                    <div class="flex justify-between text-xs mb-1">
+                        <span>J1 (Base/Z)</span>
+                        <span id="val-j1">0.00</span>
+                    </div>
+                    <input type="range" id="slider-j1" min="-3.14" max="3.14" step="0.01" value="0" class="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600">
+                </div>
+
+                <!-- Joint 2 -->
+                <div class="mb-2">
+                    <div class="flex justify-between text-xs mb-1">
+                        <span>J2 (Link1/Y)</span>
+                        <span id="val-j2">0.00</span>
+                    </div>
+                    <input type="range" id="slider-j2" min="-1.57" max="1.57" step="0.01" value="0" class="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600">
+                </div>
+
+                <!-- Joint 3 -->
+                <div class="mb-2">
+                    <div class="flex justify-between text-xs mb-1">
+                        <span>J3 (Link2/X)</span>
+                        <span id="val-j3">0.00</span>
+                    </div>
+                    <input type="range" id="slider-j3" min="-1.57" max="1.57" step="0.01" value="0" class="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 逻辑脚本 -->
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- 常量与配置 ---
+        const LINK_LENGTHS = { L1: 2, L2: 2, L3: 1.5 };
+        const f = (num) => (Math.abs(num) < 0.0001 ? '0.00' : num.toFixed(2));
+
+        // 状态管理
+        const state = {
+            jointAngles: { j1: 0, j2: 0, j3: 0 },
+            visMode: 'MDH', // 'MDH', 'SDH', 'NONE'
+            activeTab: 'intro'
+        };
+
+        // DOM 元素引用
+        const container = document.getElementById('canvas-container');
+        const tabContent = document.getElementById('tab-content');
+        const dataContainer = document.getElementById('kinematics-data-container');
+        const eePosEl = document.getElementById('ee-pos');
+        const eeRotEl = document.getElementById('ee-rot');
+
+        // Three.js 全局变量
+        let scene, camera, renderer, controls;
+        let robot = {}; // link1, link2, link3, ee
+        let frames = []; // 坐标系辅助对象数组 (Frames + Labels)
+        let screws = []; // 旋量辅助对象数组
+
+        // --- 初始化 ---
+        function init() {
+            // 场景
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf8fafc);
+            scene.fog = new THREE.Fog(0xf8fafc, 10, 50);
+
+            // 相机
+            camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 100);
+            camera.position.set(7, 5, 7);
+            camera.lookAt(0, 2, 0);
+
+            // 渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.shadowMap.enabled = true;
+            container.appendChild(renderer.domElement);
+
+            // 控制器
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+
+            // 灯光
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(5, 10, 7);
+            dirLight.castShadow = true;
+            scene.add(dirLight);
+
+            // 网格
+            const gridHelper = new THREE.GridHelper(20, 20, 0xcbd5e1, 0xe2e8f0);
+            scene.add(gridHelper);
+
+            // 构建机器人与初始化界面
+            buildRobot();
+            renderTabContent('intro'); // 初始化内容
+            updateHelpers(); // 初始化辅助线
+            
+            animate();
+            
+            // 事件监听
+            window.addEventListener('resize', onWindowResize);
+            document.getElementById('slider-j1').addEventListener('input', onSliderChange);
+            document.getElementById('slider-j2').addEventListener('input', onSliderChange);
+            document.getElementById('slider-j3').addEventListener('input', onSliderChange);
+            
+            // 初始化图标
+            lucide.createIcons();
+        }
+
+        function buildRobot() {
+            const robotGroup = new THREE.Group();
+            scene.add(robotGroup);
+
+            // 材质 (半透明)
+            const matBase = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.5, metalness: 0.5 });
+            const matLink = new THREE.MeshStandardMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
+            const matJoint = new THREE.MeshStandardMaterial({ color: 0xeab308, transparent: true, opacity: 0.6 });
+
+            // 基座 (Base)
+            const baseMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 1, 0.5, 32), matBase);
+            baseMesh.position.y = 0.25;
+            robotGroup.add(baseMesh);
+
+            // 连杆 1 组 (J1: Z轴旋转, 在 Three.js 中沿 Y 轴)
+            const link1Group = new THREE.Group();
+            link1Group.position.y = 0.5;
+            robotGroup.add(link1Group);
+            
+            // 连杆 1 几何体
+            const l1Mesh = new THREE.Mesh(new THREE.BoxGeometry(0.5, LINK_LENGTHS.L1, 0.5), matLink);
+            l1Mesh.position.y = LINK_LENGTHS.L1 / 2;
+            link1Group.add(l1Mesh);
+            const j2Mesh = new THREE.Mesh(new THREE.SphereGeometry(0.6), matJoint);
+            j2Mesh.position.y = LINK_LENGTHS.L1;
+            link1Group.add(j2Mesh);
+
+            // 连杆 2 组 (J2: Y轴旋转, 在 Three.js 中沿 Z 轴)
+            const link2Group = new THREE.Group();
+            link2Group.position.y = LINK_LENGTHS.L1;
+            link1Group.add(link2Group);
+
+            // 连杆 2 几何体
+            const l2Mesh = new THREE.Mesh(new THREE.BoxGeometry(LINK_LENGTHS.L2, 0.4, 0.4), matLink);
+            l2Mesh.position.x = LINK_LENGTHS.L2 / 2;
+            link2Group.add(l2Mesh);
+            const j3Mesh = new THREE.Mesh(new THREE.SphereGeometry(0.5), matJoint);
+            j3Mesh.position.x = LINK_LENGTHS.L2;
+            link2Group.add(j3Mesh);
+
+            // 连杆 3 组 (J3: X轴旋转)
+            const link3Group = new THREE.Group();
+            link3Group.position.x = LINK_LENGTHS.L2;
+            link2Group.add(link3Group);
+
+            // 连杆 3 几何体
+            const l3Mesh = new THREE.Mesh(new THREE.BoxGeometry(0.3, LINK_LENGTHS.L3, 0.3), matLink);
+            l3Mesh.position.y = LINK_LENGTHS.L3 / 2;
+            link3Group.add(l3Mesh);
+            
+            // 末端执行器
+            const eeMesh = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.5, 16), new THREE.MeshStandardMaterial({ color: 0xff4444, transparent: true, opacity: 0.8 }));
+            eeMesh.position.y = LINK_LENGTHS.L3;
+            link3Group.add(eeMesh);
+
+            robot = { link1: link1Group, link2: link2Group, link3: link3Group, ee: eeMesh };
+        }
+
+        // --- 辅助函数 ---
+
+        function createFrame(size = 1) {
+            return new THREE.AxesHelper(size);
+        }
+
+        // 创建带文字标签的 Sprite
+        function createLabel(text) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 128; canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            
+            // 背景圆
+            ctx.beginPath(); ctx.arc(64, 64, 40, 0, 2 * Math.PI);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)'; ctx.fill();
+            
+            // 文字
+            ctx.font = 'bold 64px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillStyle = '#0f172a'; ctx.fillText(text, 64, 64);
+            
+            const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, depthTest: false }));
+            sprite.scale.set(0.8, 0.8, 0.8); sprite.renderOrder = 999;
+            return sprite;
+        }
+
+        // 创建 PoE 旋量箭头
+        function createScrewArrow(origin, dir, length, labelText) {
+            const hex = 0xff00ff; // 品红色
+            const arrowHelper = new THREE.ArrowHelper(dir.normalize(), origin, length, hex, 0.4, 0.2);
+            
+            const label = createLabel(labelText);
+            label.position.copy(origin).add(dir.clone().multiplyScalar(length + 0.2));
+            
+            // 虚线表示轴线无限延伸
+            const material = new THREE.LineDashedMaterial({ color: hex, dashSize: 0.2, gapSize: 0.1, opacity: 0.5, transparent: true });
+            const points = [];
+            points.push(origin.clone().add(dir.clone().multiplyScalar(-length)));
+            points.push(origin.clone().add(dir.clone().multiplyScalar(length * 2)));
+            const geometry = new THREE.BufferGeometry().setFromPoints(points);
+            const line = new THREE.Line(geometry, material);
+            line.computeLineDistances();
+
+            const group = new THREE.Group();
+            group.add(arrowHelper); group.add(line); group.add(label);
+            return group;
+        }
+
+        function updateHelpers() {
+            // --- 核心修复：清理旧对象 (Frames 和 Labels) ---
+            frames.forEach(f => { 
+                if (f.parent) {
+                    f.parent.remove(f);
+                } else {
+                    scene.remove(f);
+                }
+                // 如果是 AxesHelper 或 Mesh，还需要释放资源（可选，但在简单场景非必须）
+            });
+            frames = []; // 清空数组
+
+            screws.forEach(s => scene.remove(s));
+            screws = [];
+
+            if (state.visMode === 'NONE') {
+                // PoE 模式：显示旋量轴
+                const baseOffset = 0.5;
+                const s1 = createScrewArrow(new THREE.Vector3(0, baseOffset, 0), new THREE.Vector3(0, 1, 0), 3, 'S1');
+                const s2 = createScrewArrow(new THREE.Vector3(0, baseOffset + LINK_LENGTHS.L1, 0), new THREE.Vector3(0, 0, 1), 2.5, 'S2');
+                const s3 = createScrewArrow(new THREE.Vector3(LINK_LENGTHS.L2, baseOffset + LINK_LENGTHS.L1, 0), new THREE.Vector3(1, 0, 0), 2, 'S3');
+                scene.add(s1); scene.add(s2); scene.add(s3);
+                screws.push(s1, s2, s3);
+            } else {
+                // DH 模式：显示局部坐标系
+                const f0 = createFrame(1.5); const l0 = createLabel('{0}');
+                const f1 = createFrame(1.2); const l1 = createLabel('{1}');
+                const f2 = createFrame(1.2); const l2 = createLabel('{2}');
+                const f3 = createFrame(1.2); const l3 = createLabel('{3}');
+                
+                const attach = (parent, frame, label, pos, rotY=0) => {
+                    frame.position.copy(pos);
+                    if(rotY) frame.rotation.y = rotY;
+                    label.position.copy(pos).add(new THREE.Vector3(0.4, 0.4, 0.4));
+                    parent.add(frame); parent.add(label);
+                    
+                    // --- 修复关键：将 Label 也加入 frames 数组以便后续清理 ---
+                    frames.push(frame); 
+                    frames.push(label); 
+                };
+
+                // 基坐标系 Frame 0
+                scene.add(f0); scene.add(l0); l0.position.set(0.4,0.4,0.4); 
+                frames.push(f0);
+                frames.push(l0);
+
+                if (state.visMode === 'MDH') {
+                    // MDH: 坐标系在关节轴上 (连杆近端)
+                    attach(robot.link1, f1, l1, new THREE.Vector3(0,0,0));
+                    attach(robot.link1, f2, l2, new THREE.Vector3(0, LINK_LENGTHS.L1, 0));
+                    attach(robot.link2, f3, l3, new THREE.Vector3(LINK_LENGTHS.L2, 0, 0), Math.PI/2);
+                } else if (state.visMode === 'SDH') {
+                    // SDH: 坐标系在连杆远端
+                    attach(robot.link1, f1, l1, new THREE.Vector3(0, LINK_LENGTHS.L1, 0));
+                    attach(robot.link2, f2, l2, new THREE.Vector3(LINK_LENGTHS.L2, 0, 0), Math.PI/2);
+                    attach(robot.link3, f3, l3, new THREE.Vector3(0, LINK_LENGTHS.L3, 0));
+                }
+            }
+        }
+
+        // --- 逻辑更新 ---
+
+        function updateRobotPose() {
+            robot.link1.rotation.y = state.jointAngles.j1;
+            robot.link2.rotation.z = state.jointAngles.j2;
+            robot.link3.rotation.x = state.jointAngles.j3;
+            robot.link1.updateMatrixWorld(true);
+        }
+
+        function calculateKinematicsData() {
+            if (!robot.ee) return;
+
+            // 1. 获取末端位姿 (世界坐标系)
+            const eePos = new THREE.Vector3();
+            const eeQuat = new THREE.Quaternion();
+            robot.ee.getWorldPosition(eePos);
+            robot.ee.getWorldQuaternion(eeQuat);
+            const eeEuler = new THREE.Euler().setFromQuaternion(eeQuat);
+
+            // 更新 DOM
+            if(eePosEl) eePosEl.innerHTML = `<div>X: ${f(eePos.x)}</div><div>Y: ${f(eePos.y)}</div><div>Z: ${f(eePos.z)}</div>`;
+            if(eeRotEl) eeRotEl.innerHTML = `<div>R: ${f(eeEuler.x)}</div><div>P: ${f(eeEuler.y)}</div><div>Y: ${f(eeEuler.z)}</div>`;
+
+            // 2. 计算矩阵或旋量
+            let html = '';
+
+            if (state.visMode !== 'NONE') {
+                // 显示转换矩阵
+                const title = state.visMode;
+                html += `<div class="text-xs font-bold text-slate-500 mb-2 flex items-center gap-1"><i data-lucide="arrow-right-left" class="w-3 h-3"></i> 转换矩阵 (${title})</div>`;
+                
+                // --- 修复关键：只选择 AxesHelper 计算矩阵，排除 Label Sprite ---
+                const calcFrames = frames.filter(obj => obj.type === 'AxesHelper');
+                
+                calcFrames.forEach(f => f.updateMatrixWorld(true));
+                
+                if (calcFrames.length >= 4) {
+                    for (let i = 1; i < calcFrames.length; i++) {
+                        const prev = calcFrames[i-1];
+                        const curr = calcFrames[i];
+                        // 计算相对变换矩阵 T(i-1 -> i)
+                        const mat = new THREE.Matrix4().copy(prev.matrixWorld).invert().multiply(curr.matrixWorld);
+                        html += generateMatrixHTML(`T${i-1}${i}`, mat);
+                    }
+                    // 总变换矩阵 T(0 -> 3)
+                    const total = new THREE.Matrix4().copy(calcFrames[0].matrixWorld).invert().multiply(calcFrames[calcFrames.length-1].matrixWorld);
+                    html += generateMatrixHTML('T_Total (0->3)', total);
+                } else {
+                    html += `<div class="text-xs text-slate-400 italic">正在初始化坐标系...</div>`;
+                }
+
+            } else {
+                // 显示 PoE 旋量参数
+                const baseOffset = 0.5;
+                const screwData = [
+                    { label: 'S1 (Base)', w: [0,1,0], v: [0,0,0], theta: state.jointAngles.j1 },
+                    { label: 'S2 (Shoulder)', w: [0,0,1], v: [baseOffset + LINK_LENGTHS.L1, 0, 0], theta: state.jointAngles.j2 },
+                    { label: 'S3 (Elbow)', w: [1,0,0], v: [0, baseOffset + LINK_LENGTHS.L1, -LINK_LENGTHS.L2], theta: state.jointAngles.j3 }
+                ];
+
+                html += `<div class="text-xs font-bold text-slate-500 mb-2 flex items-center gap-1"><i data-lucide="activity" class="w-3 h-3"></i> 运动旋量 (PoE)</div>`;
+                screwData.forEach(s => {
+                    html += `
+                    <div class="mb-3 bg-white p-2 rounded border border-slate-200 shadow-sm text-xs">
+                        <div class="flex justify-between items-center mb-1">
+                            <span class="font-bold text-slate-700">${s.label}</span>
+                            <span class="text-blue-600 font-mono">θ = ${f(s.theta)} rad</span>
+                        </div>
+                        <div class="font-mono text-[10px] grid grid-cols-2 gap-2 text-slate-600">
+                            <div>ω: [${s.w.join(', ')}]</div>
+                            <div>v: [${s.v.join(', ')}]</div>
+                        </div>
+                    </div>`;
+                });
+            }
+
+            if(dataContainer) dataContainer.innerHTML = html;
+            lucide.createIcons(); // 刷新图标
+        }
+
+        function generateMatrixHTML(label, matrix) {
+            const el = matrix.elements;
+            const rows = [
+                [el[0], el[4], el[8], el[12]],
+                [el[1], el[5], el[9], el[13]],
+                [el[2], el[6], el[10], el[14]],
+                [el[3], el[7], el[11], el[15]]
+            ];
+            
+            let grid = '';
+            rows.forEach(row => {
+                row.forEach(val => {
+                    grid += `<div class="text-right whitespace-nowrap">${f(val)}</div>`;
+                });
+            });
+
+            return `
+            <div class="mb-4 bg-white p-2 rounded border border-slate-200 shadow-sm">
+                <div class="text-xs font-bold text-slate-600 mb-1">${label}</div>
+                <div class="grid grid-cols-4 gap-x-2 gap-y-1 font-mono text-[10px] text-slate-800">
+                    ${grid}
+                </div>
+            </div>`;
+        }
+
+
+        // --- UI 逻辑 ---
+
+        // 暴露给 window 以供 onclick 调用
+        window.switchTab = function(tabId) {
+            state.activeTab = tabId;
+            
+            // 更新按钮样式
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                if (btn.dataset.tab === tabId) btn.classList.add('active');
+                else btn.classList.remove('active');
+            });
+
+            // 根据标签页设置显示模式
+            if (tabId === 'poe') state.visMode = 'NONE';
+            else if (tabId === 'sdh') state.visMode = 'SDH';
+            else if (tabId === 'mdh') state.visMode = 'MDH';
+            else if (tabId === 'intro' || tabId === 'compare') state.visMode = 'MDH'; // 默认
+
+            // 更新 3D 辅助线
+            updateHelpers();
+
+            // 渲染侧边栏文本内容
+            renderTabContent(tabId);
+        };
+
+        function renderTabContent(tabId) {
+            let content = '';
+            
+            if (tabId === 'intro') {
+                content = `
+                <div class="space-y-4 animate-fadeIn">
+                    <h2 class="text-2xl font-bold text-slate-800">机械臂运动学基础</h2>
+                    <p class="leading-relaxed text-slate-600">
+                      对于串联机械臂，运动学建模的核心目标是建立<strong>关节空间</strong>（Joint Space, θ）与<strong>笛卡尔空间</strong>（Cartesian Space, x,y,z,R）之间的数学映射。
+                    </p>
+                    <div class="bg-blue-50 p-4 rounded-lg border border-blue-100">
+                      <h3 class="font-semibold text-blue-800 mb-2">本演示模型：3自由度正交关节机械臂</h3>
+                      <ul class="list-disc list-inside text-sm text-blue-700 space-y-1">
+                        <li>关节1 (Base): 绕 Z 轴旋转</li>
+                        <li>关节2 (Shoulder): 绕 Y 轴旋转 (与 J1 正交)</li>
+                        <li>关节3 (Elbow): 绕 X 轴旋转 (与 J2 正交)</li>
+                      </ul>
+                    </div>
+                </div>`;
+            } else if (tabId === 'sdh') {
+                content = `
+                <div class="space-y-4">
+                    <div class="flex justify-between items-center">
+                      <h2 class="text-2xl font-bold text-slate-800">标准 DH (SDH)</h2>
+                      <div class="px-3 py-1 rounded-full text-xs font-bold bg-green-600 text-white">正在显示</div>
+                    </div>
+                    <div class="prose prose-slate prose-sm text-slate-600">
+                      <p>SDH (Standard DH) 核心特征是<strong>坐标系 i 固连在连杆 i 的远端</strong>。</p>
+                      <h4 class="font-bold mt-4 text-slate-800">变换顺序：</h4>
+                      <p class="bg-gray-100 p-2 rounded font-mono text-xs mt-2">T = Rot_z(θ) · Trans_z(d) · Trans_x(a) · Rot_x(α)</p>
+                      <ul class="list-disc pl-5 space-y-1 mt-2">
+                        <li>Z<sub>i-1</sub> 轴：沿关节 i 的轴线。</li>
+                        <li>X<sub>i</sub> 轴：沿公垂线方向。</li>
+                      </ul>
+                    </div>
+                </div>`;
+            } else if (tabId === 'mdh') {
+                content = `
+                 <div class="space-y-4">
+                    <div class="flex justify-between items-center">
+                      <h2 class="text-2xl font-bold text-slate-800">修正 DH (MDH)</h2>
+                      <div class="px-3 py-1 rounded-full text-xs font-bold bg-green-600 text-white">正在显示</div>
+                    </div>
+                    <div class="prose prose-slate prose-sm text-slate-600">
+                      <p>MDH (Craig's notation) 核心特征是<strong>坐标系 i 固连在连杆 i 的近端</strong>（与关节 i 重合）。</p>
+                      <h4 class="font-bold mt-4 text-slate-800">变换顺序：</h4>
+                      <p class="bg-gray-100 p-2 rounded font-mono text-xs mt-2">T = Rot_x(α) · Trans_x(a) · Rot_z(θ) · Trans_z(d)</p>
+                      <div class="bg-yellow-50 border-l-4 border-yellow-400 p-2 text-xs mt-2">
+                        优点：能够完美处理树状分支结构，坐标系就在电机轴上。
+                      </div>
+                    </div>
+                  </div>`;
+            } else if (tabId === 'poe') {
+                content = `
+                <div class="space-y-4">
+                    <div class="flex justify-between items-center">
+                       <h2 class="text-2xl font-bold text-slate-800">旋量法 (PoE)</h2>
+                       <div class="px-3 py-1 rounded-full text-xs font-bold bg-green-600 text-white">隐藏坐标系</div>
+                    </div>
+                    <div class="prose prose-slate prose-sm text-slate-600">
+                      <p>基于李群/李代数的指数积公式。只需要基座标系和零位参考位姿。</p>
+                      <h4 class="font-bold mt-4 text-slate-800">公式：</h4>
+                      <div class="bg-slate-800 text-white p-3 rounded font-mono text-xs overflow-x-auto mt-2">
+                        T(θ) = e^[S1]θ1 · ... · e^[Sn]θn · M
+                      </div>
+                    </div>
+                  </div>`;
+            } else if (tabId === 'compare') {
+                content = `
+                <div class="space-y-4">
+                    <h2 class="text-2xl font-bold text-slate-800">综合对比</h2>
+                    <div class="overflow-x-auto">
+                      <table class="w-full text-sm text-left border-collapse">
+                        <thead>
+                          <tr class="bg-slate-100 border-b border-slate-200">
+                            <th class="p-3 font-semibold">特性</th>
+                            <th class="p-3 font-semibold">SDH</th>
+                            <th class="p-3 font-semibold">MDH</th>
+                            <th class="p-3 font-semibold">PoE</th>
+                          </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100">
+                          <tr>
+                            <td class="p-3 font-medium text-slate-700">坐标系</td>
+                            <td class="p-3">连杆远端</td>
+                            <td class="p-3 text-green-600">连杆近端</td>
+                            <td class="p-3 text-blue-600">全局基座</td>
+                          </tr>
+                          <tr>
+                            <td class="p-3 font-medium text-slate-700">奇异性</td>
+                            <td class="p-3">存在</td>
+                            <td class="p-3">存在</td>
+                            <td class="p-3 text-green-600 font-bold">无</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>`;
+            }
+            
+            tabContent.innerHTML = content;
+        }
+
+        function onSliderChange(e) {
+            const id = e.target.id;
+            const val = parseFloat(e.target.value);
+            
+            if (id === 'slider-j1') state.jointAngles.j1 = val;
+            if (id === 'slider-j2') state.jointAngles.j2 = val;
+            if (id === 'slider-j3') state.jointAngles.j3 = val;
+
+            // Update UI Labels
+            const labelEl = document.getElementById(`val-${id.split('-')[1]}`);
+            if(labelEl) labelEl.innerText = val.toFixed(2);
+            
+            updateRobotPose();
+        }
+
+        function onWindowResize() {
+            if (!container || !camera || !renderer) return;
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (controls) controls.update();
+            calculateKinematicsData();
+            if (renderer && scene && camera) renderer.render(scene, camera);
+        }
+
+        // --- 启动 ---
+        init();
+        
+    </script>
+</body>
+</html>
