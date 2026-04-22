@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>机械臂最小范数解：瞬时动能分析</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #f8fafc; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow: hidden; }
+        .dashboard-card { background-color: white; border-radius: 8px; padding: 15px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 10px; border: 1px solid #e2e8f0; }
+        input[type=range] { width: 100%; height: 6px; background: #e2e8f0; border-radius: 4px; appearance: none; outline: none; }
+        input[type=range]::-webkit-slider-thumb { appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #3b82f6; cursor: pointer; }
+    </style>
+</head>
+<body class="h-screen w-screen flex flex-col md:flex-row p-4 gap-4">
+
+    <!-- 左侧：可视化区域 -->
+    <div class="flex-grow flex flex-col h-full relative bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+        <div class="absolute top-4 left-4 z-10 flex flex-col gap-2 pointer-events-none bg-white/80 p-3 rounded shadow-sm">
+            <div class="text-sm font-bold text-gray-800 border-b pb-1 mb-1">图例说明</div>
+            <div class="flex items-center gap-2"><div class="w-4 h-1 bg-gray-800"></div><span class="text-xs text-gray-700">当前固定姿态 (q)</span></div>
+            <div class="flex items-center gap-2"><div class="w-4 h-1 bg-red-500"></div><span class="text-xs text-gray-700">期望末端瞬时速度 (v)</span></div>
+            <div class="flex items-center gap-2"><div class="w-4 h-1 bg-blue-500 border border-blue-500 border-dashed"></div><span class="text-xs text-gray-700">瞬时运动趋势 (Ghost Arm)</span></div>
+        </div>
+        
+        <!-- 交互提示 -->
+        <div class="absolute bottom-10 left-0 w-full text-center pointer-events-none z-10">
+            <span class="bg-blue-100 text-blue-800 text-xs font-bold px-4 py-2 rounded-full shadow-md border border-blue-200">
+                🖱️ 交互：可拖拽【末端黑点】改变姿态，拖拽【红箭头头部】改变期望速度
+            </span>
+        </div>
+
+        <canvas id="mainCanvas" class="w-full h-full"></canvas>
+        <p class="text-xs text-gray-400 absolute bottom-2 left-0 w-full text-center pointer-events-none">
+            注：蓝色虚影表示应用当前关节速度一段时间后的姿态趋势。虚影末端始终沿着红色箭头方向。
+        </p>
+    </div>
+
+    <!-- 右侧：控制与数据面板 -->
+    <div class="w-full md:w-[400px] flex flex-col h-full overflow-y-auto">
+        <div class="mb-4">
+            <h2 class="text-xl font-bold text-gray-800">固定姿态瞬时分析</h2>
+            <p class="text-xs text-gray-500 mt-1">机械臂停在当前点，只分析下发速度指令的瞬间。</p>
+        </div>
+
+        <!-- 新增：连杆参数控制 -->
+        <div class="dashboard-card border-l-4 border-purple-500">
+            <h3 class="text-sm font-bold text-gray-700 mb-2">连杆长度参数 (L)</h3>
+            <div class="mb-2">
+                <div class="flex justify-between text-xs text-gray-600 mb-1">
+                    <span>连杆 1 (基座)</span><span id="L1Val" class="font-mono text-purple-600">3.0</span>
+                </div>
+                <input type="range" id="L1Slider" min="1.0" max="6.0" step="0.1" value="3.0">
+            </div>
+            <div class="mb-2">
+                <div class="flex justify-between text-xs text-gray-600 mb-1">
+                    <span>连杆 2 (中间)</span><span id="L2Val" class="font-mono text-purple-600">2.5</span>
+                </div>
+                <input type="range" id="L2Slider" min="1.0" max="6.0" step="0.1" value="2.5">
+            </div>
+            <div class="mb-2">
+                <div class="flex justify-between text-xs text-gray-600 mb-1">
+                    <span>连杆 3 (末端)</span><span id="L3Val" class="font-mono text-purple-600">2.0</span>
+                </div>
+                <input type="range" id="L3Slider" min="1.0" max="6.0" step="0.1" value="2.0">
+            </div>
+        </div>
+
+        <!-- 核心控制 -->
+        <div class="dashboard-card border-l-4 border-blue-500">
+            <label class="flex justify-between text-sm font-bold text-gray-700 mb-2">
+                <span>零空间系数 (k)</span>
+                <span id="kVal" class="text-blue-600 font-mono">0.00</span>
+            </label>
+            <input type="range" id="kSlider" min="-5" max="5" step="0.1" value="0" class="mb-2">
+            <div class="flex justify-between text-xs text-gray-400">
+                <span>-5</span><span>0 (最小范数解)</span><span>+5</span>
+            </div>
+            <button id="btnReset" class="w-full mt-3 py-1.5 bg-gray-100 text-gray-600 text-sm rounded hover:bg-gray-200 transition">重置为 0 (最小范数解)</button>
+        </div>
+
+        <!-- 动能抛物线图表 -->
+        <div class="dashboard-card flex-grow flex flex-col">
+            <h3 class="text-sm font-bold text-gray-700 mb-1">瞬时动能剖析 (勾股定理)</h3>
+            <p class="text-[10px] text-gray-500 mb-2 font-mono bg-gray-50 p-1 rounded">||dq||² = ||dq_min||² + ||k·n_null||²</p>
+            
+            <!-- 能量数值展示 -->
+            <div class="grid grid-cols-3 gap-2 mb-3 text-center border-b pb-3">
+                <div>
+                    <div class="text-[10px] text-gray-500">基础动能 (常数)</div>
+                    <div id="valE_base" class="font-bold text-green-600 font-mono text-sm">0.00</div>
+                </div>
+                <div class="text-gray-300 text-lg flex items-center justify-center">+</div>
+                <div>
+                    <div class="text-[10px] text-gray-500">零空间内耗 (可变)</div>
+                    <div id="valE_null" class="font-bold text-orange-500 font-mono text-sm">0.00</div>
+                </div>
+            </div>
+            <div class="text-center mb-2">
+                <div class="text-xs text-gray-600 font-bold">系统总瞬时动能 ||dq||²</div>
+                <div id="valE_total" class="font-bold text-blue-600 text-2xl font-mono">0.00</div>
+            </div>
+
+            <!-- 抛物线绘制区域 -->
+            <div class="relative w-full flex-grow mt-2 bg-gray-50 border rounded" style="min-height: 150px;">
+                <canvas id="graphCanvas" class="absolute top-0 left-0 w-full h-full"></canvas>
+            </div>
+            <p class="text-[10px] text-gray-400 text-center mt-1">横轴：系数 k &nbsp;|&nbsp; 纵轴：总动能 ||dq||²</p>
+        </div>
+    </div>
+
+<script>
+    const mainCanvas = document.getElementById('mainCanvas');
+    const ctxMain = mainCanvas.getContext('2d');
+    const graphCanvas = document.getElementById('graphCanvas');
+    const ctxGraph = graphCanvas.getContext('2d');
+
+    // 机械臂物理参数
+    let L = [3.0, 2.5, 2.0];
+    let q_fixed = [Math.PI/6, -Math.PI/2.2, -Math.PI/3]; // 停在一个固定、弯曲的姿态 (现改为let以便修改)
+    let v_target = [0.0, 2.5]; // 期望末端瞬时速度 (现改为let以便修改)
+    const dt_visual = 0.3; // 用于绘制Ghost Arm的虚拟时间步长
+
+    // 预计算所有固定状态的数据
+    let J, Jpinv, n_null, dq_min, E_base;
+
+    // 交互状态
+    let current_k = 0;
+    
+    // 拖拽控制状态
+    let isDraggingEndEffector = false;
+    let isDraggingVelocity = false;
+    
+    // 视图
+    let cx, cy, scale;
+
+    function initMath() {
+        J = calcJacobian(q_fixed);
+        Jpinv = pseudoInverse(J);
+        n_null = calcNullSpaceVector(J, Jpinv);
+
+        // 计算最小范数解
+        dq_min = [
+            Jpinv[0][0]*v_target[0] + Jpinv[0][1]*v_target[1],
+            Jpinv[1][0]*v_target[0] + Jpinv[1][1]*v_target[1],
+            Jpinv[2][0]*v_target[0] + Jpinv[2][1]*v_target[1]
+        ];
+        
+        E_base = dq_min[0]**2 + dq_min[1]**2 + dq_min[2]**2;
+    }
+
+    function calcJacobian(q) {
+        let theta1 = q[0], theta12 = q[0] + q[1], theta123 = q[0] + q[1] + q[2];
+        return [
+            [
+                -L[0]*Math.sin(theta1) - L[1]*Math.sin(theta12) - L[2]*Math.sin(theta123),
+                -L[1]*Math.sin(theta12) - L[2]*Math.sin(theta123),
+                -L[2]*Math.sin(theta123)
+            ],
+            [
+                L[0]*Math.cos(theta1) + L[1]*Math.cos(theta12) + L[2]*Math.cos(theta123),
+                L[1]*Math.cos(theta12) + L[2]*Math.cos(theta123),
+                L[2]*Math.cos(theta123)
+            ]
+        ];
+    }
+
+    // 标准伪逆矩阵（用于严格的数学分析）
+    function pseudoInverse(J) {
+        const Jt = [[J[0][0], J[1][0]], [J[0][1], J[1][1]], [J[0][2], J[1][2]]];
+        const JJt = [
+            [J[0][0]*Jt[0][0] + J[0][1]*Jt[1][0] + J[0][2]*Jt[2][0], J[0][0]*Jt[0][1] + J[0][1]*Jt[1][1] + J[0][2]*Jt[2][1]],
+            [J[1][0]*Jt[0][0] + J[1][1]*Jt[1][0] + J[1][2]*Jt[2][0], J[1][0]*Jt[0][1] + J[1][1]*Jt[1][1] + J[1][2]*Jt[2][1]]
+        ];
+        const det = JJt[0][0]*JJt[1][1] - JJt[0][1]*JJt[1][0];
+        // 增加对奇异矩阵的保护
+        if (Math.abs(det) < 1e-5) return [[0,0],[0,0],[0,0]];
+
+        const invJJt = [[JJt[1][1]/det, -JJt[0][1]/det], [-JJt[1][0]/det, JJt[0][0]/det]];
+        return [
+            [Jt[0][0]*invJJt[0][0] + Jt[0][1]*invJJt[1][0], Jt[0][0]*invJJt[0][1] + Jt[0][1]*invJJt[1][1]],
+            [Jt[1][0]*invJJt[0][0] + Jt[1][1]*invJJt[1][0], Jt[1][0]*invJJt[0][1] + Jt[1][1]*invJJt[1][1]],
+            [Jt[2][0]*invJJt[0][0] + Jt[2][1]*invJJt[1][0], Jt[2][0]*invJJt[0][1] + Jt[2][1]*invJJt[1][1]]
+        ];
+    }
+
+    function calcNullSpaceVector(J, Jpinv) {
+        const N = [
+            [1 - (Jpinv[0][0]*J[0][0] + Jpinv[0][1]*J[1][0]), -(Jpinv[0][0]*J[0][1] + Jpinv[0][1]*J[1][1]), -(Jpinv[0][0]*J[0][2] + Jpinv[0][1]*J[1][2])],
+            [-(Jpinv[1][0]*J[0][0] + Jpinv[1][1]*J[1][0]), 1 - (Jpinv[1][0]*J[0][1] + Jpinv[1][1]*J[1][1]), -(Jpinv[1][0]*J[0][2] + Jpinv[1][1]*J[1][2])],
+            [-(Jpinv[2][0]*J[0][0] + Jpinv[2][1]*J[1][0]), -(Jpinv[2][0]*J[0][1] + Jpinv[2][1]*J[1][1]), 1 - (Jpinv[2][0]*J[0][2] + Jpinv[2][1]*J[1][2])]
+        ];
+        let nz = [ N[0][0]+N[0][1]+N[0][2], N[1][0]+N[1][1]+N[1][2], N[2][0]+N[2][1]+N[2][2] ];
+        const len = Math.sqrt(nz[0]**2 + nz[1]**2 + nz[2]**2);
+        return len > 1e-6 ? [nz[0]/len, nz[1]/len, nz[2]/len] : [0,0,0];
+    }
+
+    function forwardKinematics(q) {
+        let x = 0, y = 0, theta = 0;
+        const joints = [{x: 0, y: 0}];
+        for (let i = 0; i < 3; i++) {
+            theta += q[i];
+            x += L[i] * Math.cos(theta);
+            y += L[i] * Math.sin(theta);
+            joints.push({x, y});
+        }
+        return joints;
+    }
+
+    // 逆运动学求解器（采用阻尼最小二乘法 DLS 确保交互拖拽不崩溃）
+    function solveIK(target_x, target_y) {
+        const lambda = 0.2; // 阻尼系数，防止奇异状态抖动
+        const max_iter = 15;
+        for (let iter = 0; iter < max_iter; iter++) {
+            let joints = forwardKinematics(q_fixed);
+            let err_x = target_x - joints[3].x;
+            let err_y = target_y - joints[3].y;
+            if (err_x*err_x + err_y*err_y < 1e-5) break;
+
+            let J = calcJacobian(q_fixed);
+            let Jt = [[J[0][0], J[1][0]], [J[0][1], J[1][1]], [J[0][2], J[1][2]]];
+            
+            // J*J^T + λ^2*I
+            let JJt_damped = [
+                [J[0][0]*Jt[0][0] + J[0][1]*Jt[1][0] + J[0][2]*Jt[2][0] + lambda*lambda, J[0][0]*Jt[0][1] + J[0][1]*Jt[1][1] + J[0][2]*Jt[2][1]],
+                [J[1][0]*Jt[0][0] + J[1][1]*Jt[1][0] + J[1][2]*Jt[2][0], J[1][0]*Jt[0][1] + J[1][1]*Jt[1][1] + J[1][2]*Jt[2][1] + lambda*lambda]
+            ];
+            
+            let det = JJt_damped[0][0]*JJt_damped[1][1] - JJt_damped[0][1]*JJt_damped[1][0];
+            let invJJt = [[JJt_damped[1][1]/det, -JJt_damped[0][1]/det], [-JJt_damped[1][0]/det, JJt_damped[0][0]/det]];
+            
+            let Jpinv_dls = [
+                [Jt[0][0]*invJJt[0][0] + Jt[0][1]*invJJt[1][0], Jt[0][0]*invJJt[0][1] + Jt[0][1]*invJJt[1][1]],
+                [Jt[1][0]*invJJt[0][0] + Jt[1][1]*invJJt[1][0], Jt[1][0]*invJJt[0][1] + Jt[1][1]*invJJt[1][1]],
+                [Jt[2][0]*invJJt[0][0] + Jt[2][1]*invJJt[1][0], Jt[2][0]*invJJt[0][1] + Jt[2][1]*invJJt[1][1]]
+            ];
+
+            let step = 0.5; // 步长
+            q_fixed[0] += (Jpinv_dls[0][0]*err_x + Jpinv_dls[0][1]*err_y) * step;
+            q_fixed[1] += (Jpinv_dls[1][0]*err_x + Jpinv_dls[1][1]*err_y) * step;
+            q_fixed[2] += (Jpinv_dls[2][0]*err_x + Jpinv_dls[2][1]*err_y) * step;
+        }
+    }
+
+    function resize() {
+        const rect1 = mainCanvas.parentElement.getBoundingClientRect();
+        mainCanvas.width = rect1.width; mainCanvas.height = rect1.height;
+        cx = mainCanvas.width / 2.5; cy = mainCanvas.height / 1.5;
+        scale = Math.min(mainCanvas.width, mainCanvas.height) / 12;
+
+        const rect2 = graphCanvas.parentElement.getBoundingClientRect();
+        graphCanvas.width = rect2.width; graphCanvas.height = rect2.height;
+        
+        render();
+    }
+    window.addEventListener('resize', resize);
+
+    function tx(x) { return cx + x * scale; }
+    function ty(y) { return cy - y * scale; }
+
+    function render() {
+        // --- 1. 计算当前合成速度 ---
+        const dq_null = [current_k * n_null[0], current_k * n_null[1], current_k * n_null[2]];
+        const dq = [dq_min[0] + dq_null[0], dq_min[1] + dq_null[1], dq_min[2] + dq_null[2]];
+        
+        const E_null = dq_null[0]**2 + dq_null[1]**2 + dq_null[2]**2;
+        const E_total = dq[0]**2 + dq[1]**2 + dq[2]**2;
+
+        // --- 2. 更新面板数据 ---
+        document.getElementById('valE_base').innerText = E_base.toFixed(2);
+        document.getElementById('valE_null').innerText = E_null.toFixed(2);
+        document.getElementById('valE_total').innerText = E_total.toFixed(2);
+
+        // --- 3. 绘制抛物线 ---
+        ctxGraph.clearRect(0, 0, graphCanvas.width, graphCanvas.height);
+        const gw = graphCanvas.width, gh = graphCanvas.height;
+        const maxK = 5;
+        let maxE = E_base + (maxK**2) * (n_null[0]**2 + n_null[1]**2 + n_null[2]**2) * 1.1;
+        if (maxE < 1) maxE = 1; // 防止纵坐标尺度过小
+        
+        // 网格和轴
+        ctxGraph.strokeStyle = '#e5e7eb'; ctxGraph.lineWidth = 1;
+        ctxGraph.beginPath();
+        ctxGraph.moveTo(0, gh - 20); ctxGraph.lineTo(gw, gh - 20); // X轴
+        ctxGraph.moveTo(gw/2, 0); ctxGraph.lineTo(gw/2, gh); // Y轴
+        ctxGraph.stroke();
+
+        // 抛物线绘制
+        ctxGraph.beginPath();
+        ctxGraph.strokeStyle = '#9ca3af'; ctxGraph.lineWidth = 2;
+        for(let px = 0; px <= gw; px += 2) {
+            let k_val = ((px / gw) - 0.5) * maxK * 2;
+            let e_val = E_base + (k_val**2) * (n_null[0]**2 + n_null[1]**2 + n_null[2]**2);
+            let py = (gh - 20) - (e_val / maxE) * (gh - 30);
+            if(px === 0) ctxGraph.moveTo(px, py); else ctxGraph.lineTo(px, py);
+        }
+        ctxGraph.stroke();
+
+        // 当前点
+        let cur_px = (current_k / (maxK * 2) + 0.5) * gw;
+        let cur_py = (gh - 20) - (E_total / maxE) * (gh - 30);
+        ctxGraph.beginPath(); ctxGraph.arc(cur_px, cur_py, 5, 0, Math.PI*2);
+        ctxGraph.fillStyle = '#3b82f6'; ctxGraph.fill();
+        ctxGraph.strokeStyle = '#fff'; ctxGraph.lineWidth = 2; ctxGraph.stroke();
+
+        // 连线到最低点
+        let min_py = (gh - 20) - (E_base / maxE) * (gh - 30);
+        ctxGraph.setLineDash([3,3]); ctxGraph.strokeStyle = '#cbd5e1';
+        ctxGraph.beginPath(); ctxGraph.moveTo(cur_px, cur_py); ctxGraph.lineTo(gw/2, min_py); ctxGraph.stroke();
+        ctxGraph.setLineDash([]);
+
+        // --- 4. 绘制机械臂 (Main Canvas) ---
+        ctxMain.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
+        
+        // 坐标系
+        ctxMain.strokeStyle = '#e5e7eb'; ctxMain.lineWidth = 1;
+        ctxMain.beginPath(); ctxMain.moveTo(0, cy); ctxMain.lineTo(mainCanvas.width, cy); ctxMain.stroke();
+        ctxMain.beginPath(); ctxMain.moveTo(cx, 0); ctxMain.lineTo(cx, mainCanvas.height); ctxMain.stroke();
+
+        const joints_fixed = forwardKinematics(q_fixed);
+        
+        // 绘制 Ghost Arm (预期位姿)
+        const eps = 1e-5;
+        const q_tiny = [q_fixed[0] + dq[0]*eps, q_fixed[1] + dq[1]*eps, q_fixed[2] + dq[2]*eps];
+        const joints_tiny = forwardKinematics(q_tiny);
+        
+        const joints_ghost = [];
+        for(let i=0; i<joints_fixed.length; i++) {
+            joints_ghost.push({
+                x: joints_fixed[i].x + (joints_tiny[i].x - joints_fixed[i].x) * (dt_visual / eps),
+                y: joints_fixed[i].y + (joints_tiny[i].y - joints_fixed[i].y) * (dt_visual / eps)
+            });
+        }
+        
+        ctxMain.globalAlpha = 0.5;
+        ctxMain.strokeStyle = '#3b82f6'; ctxMain.lineWidth = 4; ctxMain.setLineDash([5, 5]);
+        ctxMain.beginPath(); ctxMain.moveTo(tx(joints_ghost[0].x), ty(joints_ghost[0].y));
+        for(let i=1; i<joints_ghost.length; i++) ctxMain.lineTo(tx(joints_ghost[i].x), ty(joints_ghost[i].y));
+        ctxMain.stroke();
+        ctxMain.setLineDash([]);
+        ctxMain.globalAlpha = 1.0;
+
+        // 绘制 固定基准臂
+        ctxMain.strokeStyle = '#1f2937'; ctxMain.lineWidth = 6; ctxMain.lineCap = 'round'; ctxMain.lineJoin = 'round';
+        ctxMain.beginPath(); ctxMain.moveTo(tx(joints_fixed[0].x), ty(joints_fixed[0].y));
+        for(let i=1; i<joints_fixed.length; i++) ctxMain.lineTo(tx(joints_fixed[i].x), ty(joints_fixed[i].y));
+        ctxMain.stroke();
+
+        ctxMain.fillStyle = '#4b5563';
+        for(let i=0; i<joints_fixed.length; i++) {
+            ctxMain.beginPath(); 
+            // 如果是末端执行器，画大一点的黑点暗示可以拖拽
+            let radius = i === 3 ? 8 : 5; 
+            ctxMain.arc(tx(joints_fixed[i].x), ty(joints_fixed[i].y), radius, 0, Math.PI*2); 
+            ctxMain.fill();
+            if(i>0 && i<3) { 
+                ctxMain.fillStyle = 'white'; 
+                ctxMain.beginPath(); 
+                ctxMain.arc(tx(joints_fixed[i].x), ty(joints_fixed[i].y), 2, 0, Math.PI*2); 
+                ctxMain.fill(); 
+                ctxMain.fillStyle = '#4b5563'; 
+            }
+        }
+
+        // 绘制目标速度向量 (末端红箭头)
+        const tipX = tx(joints_fixed[3].x);
+        const tipY = ty(joints_fixed[3].y);
+        const endX = tipX + v_target[0] * scale * dt_visual;
+        const endY = tipY - v_target[1] * scale * dt_visual;
+
+        ctxMain.strokeStyle = '#ef4444'; ctxMain.lineWidth = 3;
+        ctxMain.beginPath(); ctxMain.moveTo(tipX, tipY); ctxMain.lineTo(endX, endY); ctxMain.stroke();
+        
+        // 箭头头部 (加粗一点暗示可拖拽)
+        const angle = Math.atan2(endY - tipY, endX - tipX);
+        ctxMain.beginPath(); ctxMain.moveTo(endX, endY);
+        ctxMain.lineTo(endX - 12 * Math.cos(angle - Math.PI/6), endY - 12 * Math.sin(angle - Math.PI/6));
+        ctxMain.lineTo(endX - 12 * Math.cos(angle + Math.PI/6), endY - 12 * Math.sin(angle + Math.PI/6));
+        ctxMain.fillStyle = '#ef4444'; ctxMain.fill();
+
+        // 绘制拖拽反馈圆圈
+        if (isDraggingEndEffector) {
+            ctxMain.beginPath(); ctxMain.arc(tipX, tipY, 15, 0, Math.PI*2);
+            ctxMain.strokeStyle = "rgba(75, 85, 99, 0.5)"; ctxMain.lineWidth = 2; ctxMain.stroke();
+        }
+        if (isDraggingVelocity) {
+            ctxMain.beginPath(); ctxMain.arc(endX, endY, 15, 0, Math.PI*2);
+            ctxMain.strokeStyle = "rgba(239, 68, 68, 0.5)"; ctxMain.lineWidth = 2; ctxMain.stroke();
+        }
+
+        // --- 5. 绘制关节角度与差值标注 ---
+        ctxMain.font = "11px monospace";
+        ctxMain.textAlign = "left";
+        for (let i = 0; i < 3; i++) {
+            let val_ghost = (q_fixed[i] + dq[i] * dt_visual) * 180 / Math.PI;
+            let val_delta = dq[i] * dt_visual * 180 / Math.PI;
+
+            let text1 = `q${i+1}: ${val_ghost.toFixed(2)}°`;
+            let text2 = `Δ : ${val_delta > 0 ? '+' : ''}${val_delta.toFixed(2)}°`;
+
+            let textX = tx(joints_ghost[i].x) + 15;
+            let textY = ty(joints_ghost[i].y) - 15;
+
+            ctxMain.fillStyle = "rgba(255, 255, 255, 0.85)";
+            ctxMain.fillRect(textX - 4, textY - 11, 85, 28);
+            ctxMain.strokeStyle = "rgba(200, 200, 200, 0.5)";
+            ctxMain.lineWidth = 1;
+            ctxMain.strokeRect(textX - 4, textY - 11, 85, 28);
+
+            ctxMain.fillStyle = "#4b5563"; 
+            ctxMain.fillText(text1, textX, textY);
+            ctxMain.fillStyle = "#3b82f6"; 
+            ctxMain.fillText(text2, textX, textY + 13);
+        }
+    }
+
+    // --- 交互系统 ---
+    
+    // 获取鼠标在 Canvas 上的物理坐标
+    function getMousePos(e) {
+        const rect = mainCanvas.getBoundingClientRect();
+        return {
+            x: e.clientX - rect.left,
+            y: e.clientY - rect.top
+        };
+    }
+
+    mainCanvas.addEventListener('mousedown', (e) => {
+        const mouse = getMousePos(e);
+        const joints = forwardKinematics(q_fixed);
+        const tipX = tx(joints[3].x);
+        const tipY = ty(joints[3].y);
+        const endX = tipX + v_target[0] * scale * dt_visual;
+        const endY = tipY - v_target[1] * scale * dt_visual;
+
+        // 优先级 1: 检查是否点中红箭头头部
+        if (Math.hypot(mouse.x - endX, mouse.y - endY) < 20) {
+            isDraggingVelocity = true;
+            return;
+        }
+
+        // 优先级 2: 检查是否点中末端执行器黑点
+        if (Math.hypot(mouse.x - tipX, mouse.y - tipY) < 20) {
+            isDraggingEndEffector = true;
+            return;
+        }
+    });
+
+    window.addEventListener('mouseup', () => {
+        isDraggingEndEffector = false;
+        isDraggingVelocity = false;
+        mainCanvas.style.cursor = 'default';
+        initMath();
+        render();
+    });
+
+    mainCanvas.addEventListener('mousemove', (e) => {
+        const mouse = getMousePos(e);
+        
+        // 仅处理光标变化
+        if (!isDraggingEndEffector && !isDraggingVelocity) {
+            const joints = forwardKinematics(q_fixed);
+            const tipX = tx(joints[3].x);
+            const tipY = ty(joints[3].y);
+            const endX = tipX + v_target[0] * scale * dt_visual;
+            const endY = tipY - v_target[1] * scale * dt_visual;
+            
+            if (Math.hypot(mouse.x - endX, mouse.y - endY) < 20 || Math.hypot(mouse.x - tipX, mouse.y - tipY) < 20) {
+                mainCanvas.style.cursor = 'grab';
+            } else {
+                mainCanvas.style.cursor = 'default';
+            }
+            return;
+        }
+
+        // 处理拖拽逻辑
+        mainCanvas.style.cursor = 'grabbing';
+        
+        const worldX = (mouse.x - cx) / scale;
+        const worldY = (cy - mouse.y) / scale;
+
+        if (isDraggingEndEffector) {
+            // IK逆解求解器
+            solveIK(worldX, worldY);
+        } else if (isDraggingVelocity) {
+            // 更新速度向量
+            const joints = forwardKinematics(q_fixed);
+            v_target[0] = (worldX - joints[3].x) / dt_visual;
+            v_target[1] = (worldY - joints[3].y) / dt_visual;
+        }
+
+        initMath();
+        render();
+    });
+
+
+    // --- 原有控件绑定 ---
+    document.getElementById('kSlider').addEventListener('input', (e) => {
+        current_k = parseFloat(e.target.value);
+        document.getElementById('kVal').innerText = current_k.toFixed(2);
+        render();
+    });
+
+    document.getElementById('btnReset').addEventListener('click', () => {
+        current_k = 0;
+        document.getElementById('kSlider').value = 0;
+        document.getElementById('kVal').innerText = '0.00';
+        render();
+    });
+
+    document.getElementById('L1Slider').addEventListener('input', (e) => {
+        L[0] = parseFloat(e.target.value);
+        document.getElementById('L1Val').innerText = L[0].toFixed(1);
+        initMath(); render();
+    });
+
+    document.getElementById('L2Slider').addEventListener('input', (e) => {
+        L[1] = parseFloat(e.target.value);
+        document.getElementById('L2Val').innerText = L[1].toFixed(1);
+        initMath(); render();
+    });
+
+    document.getElementById('L3Slider').addEventListener('input', (e) => {
+        L[2] = parseFloat(e.target.value);
+        document.getElementById('L3Val').innerText = L[2].toFixed(1);
+        initMath(); render();
+    });
+
+    // 初始化
+    initMath();
+    resize();
+</script>
+</body>
+</html>
