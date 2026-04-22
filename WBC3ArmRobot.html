@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>3连杆机械臂：WBC 严格任务优先级控制</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #f1f5f9; font-family: 'Segoe UI', sans-serif; overflow: hidden; margin: 0; padding: 0;}
+        #mainCanvas { cursor: grab; background-color: #ffffff; border-radius: 8px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+        #mainCanvas:active { cursor: grabbing; }
+        .control-panel { background: white; border-radius: 8px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+    </style>
+</head>
+<body class="h-screen w-screen flex flex-col md:flex-row p-4 gap-4 box-border">
+
+    <!-- 左侧：可视化主画布 -->
+    <div class="flex-grow flex flex-col relative">
+        <div class="absolute top-4 left-4 z-10 bg-white/90 p-3 rounded shadow-sm border border-gray-100 pointer-events-none">
+            <h3 class="text-sm font-bold text-gray-800 mb-2 border-b pb-1">WBC 层级图例</h3>
+            <div class="flex items-center gap-2 mb-1"><div class="w-3 h-3 rounded-full bg-red-500"></div><span class="text-xs text-gray-700">任务1 (高优)：末端位置目标</span></div>
+            <div class="flex items-center gap-2 mb-1"><div class="w-4 h-1 border-t-2 border-dashed border-blue-500"></div><span class="text-xs text-gray-700">任务2 (低优)：期望末端姿态</span></div>
+            <div class="flex items-center gap-2"><div class="w-4 h-1 bg-gray-800"></div><span class="text-xs text-gray-700">机械臂物理连杆</span></div>
+        </div>
+        <canvas id="mainCanvas" class="w-full h-full"></canvas>
+        <div class="absolute bottom-4 w-full text-center pointer-events-none">
+            <span class="bg-gray-800 text-white text-xs px-4 py-2 rounded-full opacity-80 shadow-lg">
+                🖱️ 拖拽【红色目标点】改变位置 | 滑动【右侧滑块】改变姿态
+            </span>
+        </div>
+    </div>
+
+    <!-- 右侧：WBC 控制台 -->
+    <div class="w-full md:w-[360px] flex flex-col gap-4 overflow-y-auto">
+        <div class="control-panel p-4 border-t-4 border-indigo-600">
+            <h2 class="text-lg font-bold text-gray-800">Siciliano 任务优先级框架</h2>
+            <p class="text-[11px] text-gray-500 mt-1 font-mono bg-gray-50 p-2 rounded">
+                dq = J₁⁺ ẋ₁ + (J₂N₁)⁺ (ẋ₂ - J₂J₁⁺ ẋ₁)<br>
+                N₁ = I - J₁⁺J₁
+            </p>
+        </div>
+
+        <div class="control-panel p-4 border-l-4 border-blue-500">
+            <h3 class="text-sm font-bold text-gray-800 mb-3 flex justify-between">
+                <span>任务 2 (低优)：目标姿态</span>
+                <span id="targetAngleTxt" class="text-blue-600">0°</span>
+            </h3>
+            <input type="range" id="angleSlider" min="-180" max="180" step="1" value="0" class="w-full mb-1">
+            <p class="text-[10px] text-gray-500">在满足位置约束的前提下，依靠零空间重构姿态。</p>
+        </div>
+
+        <div class="control-panel p-4 flex-grow flex flex-col">
+            <h3 class="text-sm font-bold text-gray-800 mb-3 border-b pb-2">实时误差监控 (Error)</h3>
+            
+            <div class="mb-4">
+                <div class="flex justify-between text-xs mb-1">
+                    <span class="text-red-600 font-bold">任务 1 (位置) 误差</span>
+                    <span id="errPosTxt" class="font-mono">0.000 px</span>
+                </div>
+                <div class="w-full bg-gray-200 h-1.5 rounded-full overflow-hidden">
+                    <div id="errPosBar" class="bg-red-500 h-full transition-all" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <div class="mb-4">
+                <div class="flex justify-between text-xs mb-1">
+                    <span class="text-blue-600 font-bold">任务 2 (姿态) 误差</span>
+                    <span id="errOriTxt" class="font-mono">0.00°</span>
+                </div>
+                <div class="w-full bg-gray-200 h-1.5 rounded-full overflow-hidden">
+                    <div id="errOriBar" class="bg-blue-500 h-full transition-all" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <!-- 替换数值面板，改为时间曲线图表 -->
+            <div class="mb-4 pt-3 border-t border-gray-100">
+                <div class="flex justify-between text-xs mb-1">
+                    <span class="text-purple-600 font-bold">雅可比条件数实时波动图</span>
+                </div>
+                <div class="flex items-center gap-3 text-[10px] mb-1">
+                    <div class="flex items-center gap-1"><div class="w-2 h-2 bg-purple-500"></div><span>主任务(J₁)</span></div>
+                    <div class="flex items-center gap-1"><div class="w-2 h-2 bg-orange-500"></div><span>全局增广(J_aug)</span></div>
+                </div>
+                <canvas id="condChart" class="w-full h-24 bg-white border border-gray-200 rounded"></canvas>
+                <p class="text-[9px] text-gray-500 leading-tight mt-1">数值飙升代表接近奇异点。J_aug= [J₁; J₂] 综合了位置和姿态任务，当其飙升说明冗余度耗尽，任务产生冲突。</p>
+            </div>
+
+            <div class="mt-auto p-3 bg-yellow-50 border border-yellow-200 rounded text-xs text-gray-700">
+                <strong>核心看点：</strong><br>
+                1. 拖动红点时，手臂自动保持虚线方向。<br>
+                2. 当红点拖到太近或太远，无法同时满足时，<span class="text-red-600">位置任务优先</span>，姿态误差会被迫增大（低优先级让步）。
+            </div>
+            
+            <button id="btnReset" class="w-full mt-4 py-2 bg-gray-100 text-gray-700 hover:bg-gray-200 rounded text-sm transition">重置机械臂</button>
+        </div>
+    </div>
+
+<script>
+    /* =========================================================
+       1. 鲁棒的轻量级矩阵数学库 (Matrix Math)
+       ========================================================= */
+    const Mat = {
+        // 创建零矩阵
+        zeros: (r, c) => Array(r).fill(0).map(() => Array(c).fill(0)),
+        // 创建单位阵
+        eye: (n) => {
+            let res = Mat.zeros(n, n);
+            for (let i=0; i<n; i++) res[i][i] = 1;
+            return res;
+        },
+        // 矩阵加法
+        add: (A, B) => A.map((row, i) => row.map((val, j) => val + B[i][j])),
+        // 矩阵减法
+        sub: (A, B) => A.map((row, i) => row.map((val, j) => val - B[i][j])),
+        // 矩阵乘法
+        mul: (A, B) => {
+            let res = Mat.zeros(A.length, B[0].length);
+            for (let i=0; i<A.length; i++) {
+                for (let j=0; j<B[0].length; j++) {
+                    for (let k=0; k<A[0].length; k++) {
+                        res[i][j] += A[i][k] * B[k][j];
+                    }
+                }
+            }
+            return res;
+        },
+        // 标量乘法
+        scale: (A, s) => A.map(row => row.map(val => val * s)),
+        // 矩阵转置
+        transpose: (A) => A[0].map((_, colIndex) => A.map(row => row[colIndex])),
+        
+        // --- 核心：带有阻尼的伪逆算法 (Damped Least Squares) ---
+        // 针对 2x3 矩阵 J1
+        dls_pinv_2x3: (J, lambda) => {
+            const Jt = Mat.transpose(J);
+            let JJt = Mat.mul(J, Jt); // 2x2
+            // 加上阻尼项 λ^2 * I 防止奇异
+            JJt[0][0] += lambda * lambda;
+            JJt[1][1] += lambda * lambda;
+            // 求 2x2 逆
+            const det = JJt[0][0]*JJt[1][1] - JJt[0][1]*JJt[1][0];
+            const invJJt = [
+                [JJt[1][1]/det, -JJt[0][1]/det],
+                [-JJt[1][0]/det, JJt[0][0]/det]
+            ];
+            // J^+ = J^T * (J J^T + λ^2 I)^-1
+            return Mat.mul(Jt, invJJt); 
+        },
+        // 针对 1x3 矩阵 J2|1 (即 J2*N1)
+        dls_pinv_1x3: (J, lambda) => {
+            // J 是一行三列 [[j1, j2, j3]]
+            const Jt = Mat.transpose(J);
+            // J J^T 是一个标量
+            const JJt_scalar = J[0][0]*J[0][0] + J[0][1]*J[0][1] + J[0][2]*J[0][2];
+            const denom = JJt_scalar + lambda * lambda;
+            return [
+                [Jt[0][0] / denom],
+                [Jt[1][0] / denom],
+                [Jt[2][0] / denom]
+            ];
+        }
+    };
+
+    /* =========================================================
+       2. 机器人运动学定义 (Kinematics)
+       ========================================================= */
+    const L = [3.0, 2.5, 2.0]; // 连杆长度
+    let q = [Math.PI/4, -Math.PI/2, -Math.PI/4]; // 当前关节角
+
+    // 正运动学：返回所有关节的(x, y)和末端姿态 phi
+    function forwardKinematics(q_arr) {
+        let x = 0, y = 0, theta = 0;
+        const joints = [{x: 0, y: 0}];
+        for (let i = 0; i < 3; i++) {
+            theta += q_arr[i];
+            x += L[i] * Math.cos(theta);
+            y += L[i] * Math.sin(theta);
+            joints.push({x, y});
+        }
+        return { joints, pos: {x, y}, phi: theta };
+    }
+
+    // 任务1：位置的雅可比矩阵 (2x3)
+    function calcJ1(q_arr) {
+        let t1 = q_arr[0], t12 = q_arr[0] + q_arr[1], t123 = q_arr[0] + q_arr[1] + q_arr[2];
+        return [
+            [
+                -L[0]*Math.sin(t1) - L[1]*Math.sin(t12) - L[2]*Math.sin(t123),
+                -L[1]*Math.sin(t12) - L[2]*Math.sin(t123),
+                -L[2]*Math.sin(t123)
+            ],
+            [
+                L[0]*Math.cos(t1) + L[1]*Math.cos(t12) + L[2]*Math.cos(t123),
+                L[1]*Math.cos(t12) + L[2]*Math.cos(t123),
+                L[2]*Math.cos(t123)
+            ]
+        ];
+    }
+    // 任务2：姿态的雅可比矩阵 (1x3)
+    const J2 = [[1, 1, 1]]; 
+
+    // 计算 2x3 雅可比矩阵的条件数 (最大奇异值 / 最小奇异值)
+    function calcConditionNumber(J) {
+        const Jt = Mat.transpose(J);
+        const M = Mat.mul(J, Jt); // 2x2 矩阵 JJ^T
+        const a = M[0][0], b = M[0][1], c = M[1][1];
+        
+        // 计算 2x2 矩阵的特征值
+        const trace = a + c;
+        const det = a * c - b * b;
+        const temp = Math.sqrt(Math.max(0, trace * trace - 4 * det));
+        const lambda1 = (trace + temp) / 2;
+        const lambda2 = (trace - temp) / 2;
+        
+        // 奇异值为特征值的平方根
+        const sig_max = Math.sqrt(Math.max(0, lambda1));
+        const sig_min = Math.sqrt(Math.max(0, lambda2));
+        
+        if (sig_min < 1e-6) return Infinity; // 接近奇异点
+        return sig_max / sig_min;
+    }
+
+    // 计算 3x3 增广雅可比矩阵的条件数 (解析法求对称矩阵特征值)
+    function calcConditionNumber3x3(J) {
+        const Jt = Mat.transpose(J);
+        const M = Mat.mul(J, Jt); // 3x3
+        
+        let p1 = M[0][1]*M[0][1] + M[0][2]*M[0][2] + M[1][2]*M[1][2];
+        if (p1 < 1e-8) {
+            let eigs = [M[0][0], M[1][1], M[2][2]].sort((a,b)=>b-a);
+            if (eigs[2] < 1e-6) return Infinity;
+            return Math.sqrt(eigs[0] / eigs[2]);
+        }
+        let q = (M[0][0] + M[1][1] + M[2][2]) / 3.0;
+        let p2 = (M[0][0] - q)**2 + (M[1][1] - q)**2 + (M[2][2] - q)**2 + 2 * p1;
+        let p = Math.sqrt(p2 / 6.0);
+        let B = [
+            [(M[0][0]-q)/p, M[0][1]/p, M[0][2]/p],
+            [M[1][0]/p, (M[1][1]-q)/p, M[1][2]/p],
+            [M[2][0]/p, M[2][1]/p, (M[2][2]-q)/p]
+        ];
+        let detB = B[0][0]*(B[1][1]*B[2][2] - B[1][2]*B[2][1])
+                 - B[0][1]*(B[1][0]*B[2][2] - B[1][2]*B[2][0])
+                 + B[0][2]*(B[1][0]*B[2][1] - B[1][1]*B[2][0]);
+        let r = detB / 2.0;
+        let phi;
+        if (r <= -1) phi = Math.PI / 3.0;
+        else if (r >= 1) phi = 0;
+        else phi = Math.acos(r) / 3.0;
+
+        let eig1 = q + 2 * p * Math.cos(phi);
+        let eig3 = q + 2 * p * Math.cos(phi + (2*Math.PI/3.0));
+        let eig2 = 3 * q - eig1 - eig3;
+
+        let eigs = [eig1, eig2, eig3].sort((a,b)=>b-a);
+        if (eigs[2] < 1e-6) return Infinity;
+        return Math.sqrt(Math.max(0, eigs[0])) / Math.sqrt(Math.max(0, eigs[2]));
+    }
+
+    // 确保角度计算遵循最短路径 (-pi 到 pi)
+    function wrapAngle(angle) {
+        return Math.atan2(Math.sin(angle), Math.cos(angle));
+    }
+
+
+    /* =========================================================
+       3. WBC 控制器及主循环 (Control Loop)
+       ========================================================= */
+    // 目标状态
+    let target = { x: 4.0, y: 2.0, phi: 0 }; 
+
+    // 模拟参数
+    const dt = 0.016; 
+    const K1 = 15.0; // 主任务增益 (强烈想要到达目标)
+    const K2 = 8.0;  // 次任务增益
+    const lambda1 = 0.05; // J1 的阻尼（保护位置不爆炸）
+    const lambda2 = 0.05; // J2|1 的阻尼（保护姿态不爆炸）
+
+    let err_pos_mag = 0;
+    let err_ori_mag = 0;
+
+    function controlStep() {
+        let fk = forwardKinematics(q);
+        
+        // --- A. 计算任务误差 ---
+        // 任务1误差向量: v1 = K1 * (xd - x)
+        let ex = target.x - fk.pos.x;
+        let ey = target.y - fk.pos.y;
+        let v1 = [[ex * K1], [ey * K1]];
+        err_pos_mag = Math.hypot(ex, ey); // 用于UI显示
+
+        // 任务2误差向量: v2 = K2 * (phid - phi)
+        let e_phi = wrapAngle(target.phi - fk.phi);
+        let v2 = [[e_phi * K2]];
+        err_ori_mag = Math.abs(e_phi); // 用于UI显示
+
+        // --- B. 构建雅可比及伪逆 ---
+        let J1 = calcJ1(q);
+        let J1_pinv = Mat.dls_pinv_2x3(J1, lambda1);
+        
+        // 零空间投影矩阵 N1 = I - J1^+ * J1
+        let N1 = Mat.sub(Mat.eye(3), Mat.mul(J1_pinv, J1));
+        
+        // 投影姿态雅可比 J2|1 = J2 * N1
+        let J2_N1 = Mat.mul(J2, N1);
+        // 其伪逆 (J2*N1)^+
+        let J2_N1_pinv = Mat.dls_pinv_1x3(J2_N1, lambda2);
+
+        // --- C. Siciliano 严格优先级方程求解 ---
+        // 1. 主任务速度: dq1 = J1^+ * v1
+        let dq1 = Mat.mul(J1_pinv, v1);
+        
+        // 2. 主任务对姿态产生的附带影响: J2 * dq1
+        let J2_dq1 = Mat.mul(J2, dq1); 
+        
+        // 3. 次任务需要补偿的残余量: residual = v2 - J2*dq1
+        let residual = Mat.sub(v2, J2_dq1);
+        
+        // 4. 在零空间内实现补偿: dq2 = (J2*N1)^+ * residual
+        let dq2 = Mat.mul(J2_N1_pinv, residual);
+        
+        // 5. 总输出速度: dq = dq1 + dq2
+        let dq = Mat.add(dq1, dq2);
+
+        // --- D. 积分更新物理状态 ---
+        q[0] += dq[0][0] * dt;
+        q[1] += dq[1][0] * dt;
+        q[2] += dq[2][0] * dt;
+    }
+
+
+    /* =========================================================
+       4. 渲染与交互视图 (View & Interaction)
+       ========================================================= */
+    const canvas = document.getElementById('mainCanvas');
+    const ctx = canvas.getContext('2d');
+    let cx, cy, scale;
+
+    // --- 图表相关变量 ---
+    const chartCanvas = document.getElementById('condChart');
+    const chartCtx = chartCanvas.getContext('2d');
+    const historyLen = 150;
+    let condHistoryJ1 = Array(historyLen).fill(1);
+    let condHistoryJaug = Array(historyLen).fill(1);
+
+    function drawChart() {
+        chartCtx.clearRect(0, 0, chartCanvas.width, chartCanvas.height);
+        const w = chartCanvas.width;
+        const h = chartCanvas.height;
+        
+        // 动态寻找当前窗口内的最大值，封顶在 50 防止图表被Infinity压扁
+        let maxVal = 5;
+        for(let i=0; i<historyLen; i++) {
+            if(condHistoryJ1[i] !== Infinity && condHistoryJ1[i] > maxVal) maxVal = condHistoryJ1[i];
+            if(condHistoryJaug[i] !== Infinity && condHistoryJaug[i] > maxVal) maxVal = condHistoryJaug[i];
+        }
+        if (maxVal > 50) maxVal = 50; 
+        
+        // 绘制背景网格
+        chartCtx.strokeStyle = '#f8fafc';
+        chartCtx.lineWidth = 1;
+        chartCtx.beginPath();
+        for(let i=1; i<4; i++) {
+            let y = h - (i/4)*h;
+            chartCtx.moveTo(0, y); chartCtx.lineTo(w, y);
+        }
+        chartCtx.stroke();
+
+        // 绘制折线函数
+        const drawLine = (data, color) => {
+            chartCtx.beginPath();
+            chartCtx.strokeStyle = color;
+            chartCtx.lineWidth = 2;
+            chartCtx.lineJoin = 'round';
+            for(let i=0; i<historyLen; i++) {
+                let val = data[i];
+                if (val === Infinity) val = maxVal * 1.05; // 触顶画法
+                else if (val > maxVal) val = maxVal;
+                
+                let x = (i / (historyLen - 1)) * w;
+                let y = h - (val / maxVal) * (h - 4) - 2;
+                if(i===0) chartCtx.moveTo(x, y);
+                else chartCtx.lineTo(x, y);
+            }
+            chartCtx.stroke();
+        };
+        
+        drawLine(condHistoryJaug, '#f97316'); // 橙色 J_aug
+        drawLine(condHistoryJ1, '#a855f7');   // 紫色 J1
+    }
+
+    function resize() {
+        const rect = canvas.parentElement.getBoundingClientRect();
+        canvas.width = rect.width; canvas.height = rect.height;
+        cx = canvas.width / 2;
+        cy = canvas.height / 1.5; // 坐标原点偏下方
+        scale = Math.min(canvas.width, canvas.height) / 16; // 缩放比例
+        
+        // 初始化图表分辨率
+        chartCanvas.width = chartCanvas.parentElement.clientWidth;
+        chartCanvas.height = 96; 
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function tx(x) { return cx + x * scale; }
+    function ty(y) { return cy - y * scale; }
+    // 逆转换（从屏幕像素到世界坐标）
+    function invX(sx) { return (sx - cx) / scale; }
+    function invY(sy) { return (cy - sy) / scale; }
+
+    function draw() {
+        // 为了平滑响应，每渲染一帧，后台跑 5 次高频控制循环
+        for(let i=0; i<5; i++) controlStep();
+
+        // -- 清除并画背景 --
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(canvas.width, cy); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, canvas.height); ctx.stroke();
+
+        let fk = forwardKinematics(q);
+
+        // -- 画任务2: 目标姿态的虚线指示器 --
+        const dirLen = 2.5 * scale;
+        const eX = tx(target.x);
+        const eY = ty(target.y);
+        ctx.strokeStyle = '#3b82f6'; // 蓝色
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(eX, eY);
+        ctx.lineTo(eX + dirLen * Math.cos(target.phi), eY - dirLen * Math.sin(target.phi));
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // -- 画机械臂本体 --
+        ctx.strokeStyle = '#1f2937'; ctx.lineWidth = 8; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(tx(fk.joints[0].x), ty(fk.joints[0].y));
+        for(let i=1; i<=3; i++) ctx.lineTo(tx(fk.joints[i].x), ty(fk.joints[i].y));
+        ctx.stroke();
+
+        ctx.fillStyle = '#4b5563';
+        for(let i=0; i<=3; i++) {
+            ctx.beginPath(); 
+            ctx.arc(tx(fk.joints[i].x), ty(fk.joints[i].y), 6, 0, Math.PI*2); 
+            ctx.fill();
+            if(i>0 && i<3) { 
+                ctx.fillStyle = 'white'; 
+                ctx.beginPath(); ctx.arc(tx(fk.joints[i].x), ty(fk.joints[i].y), 2.5, 0, Math.PI*2); ctx.fill(); 
+                ctx.fillStyle = '#4b5563'; 
+            }
+        }
+
+        // -- 画任务1: 红色的目标位置点 --
+        ctx.fillStyle = '#ef4444'; // 红色
+        ctx.beginPath();
+        ctx.arc(tx(target.x), ty(target.y), 8, 0, Math.PI*2);
+        ctx.fill();
+        ctx.strokeStyle = 'white'; ctx.lineWidth = 2; ctx.stroke();
+
+        // -- 更新 UI 数据 --
+        document.getElementById('errPosTxt').innerText = err_pos_mag.toFixed(3) + ' unit';
+        // 如果误差超过 0.1，进度条变红爆满
+        document.getElementById('errPosBar').style.width = Math.min(100, (err_pos_mag / 0.2) * 100) + '%';
+        
+        let oriDeg = err_ori_mag * 180 / Math.PI;
+        document.getElementById('errOriTxt').innerText = oriDeg.toFixed(1) + '°';
+        // 如果姿态误差大于2度，说明位置优先级压制了姿态
+        document.getElementById('errOriBar').style.width = Math.min(100, (oriDeg / 30) * 100) + '%';
+        if (oriDeg > 2.0) {
+            document.getElementById('errOriBar').classList.replace('bg-blue-500', 'bg-orange-500');
+        } else {
+            document.getElementById('errOriBar').classList.replace('bg-orange-500', 'bg-blue-500');
+        }
+
+        // -- 记录并绘制雅可比条件数曲线 --
+        let J1_current = calcJ1(q);
+        let condNumJ1 = calcConditionNumber(J1_current);
+        
+        // 将 J1 和 J2 结合，评估全局系统的冲突与奇异度
+        let J_aug = [ J1_current[0], J1_current[1], J2[0] ];
+        let condNumJaug = calcConditionNumber3x3(J_aug);
+        
+        // 更新数据管道
+        condHistoryJ1.push(condNumJ1);
+        condHistoryJ1.shift();
+        condHistoryJaug.push(condNumJaug);
+        condHistoryJaug.shift();
+        
+        drawChart();
+
+        requestAnimationFrame(draw);
+    }
+
+    /* =========================================================
+       5. 事件监听 (UI & Mouse)
+       ========================================================= */
+    let isDragging = false;
+    
+    // 获取鼠标在画布上的局部坐标
+    function getMousePos(evt) {
+        const rect = canvas.getBoundingClientRect();
+        return { x: evt.clientX - rect.left, y: evt.clientY - rect.top };
+    }
+
+    canvas.addEventListener('mousedown', (e) => {
+        const mouse = getMousePos(e);
+        const dist = Math.hypot(mouse.x - tx(target.x), mouse.y - ty(target.y));
+        if (dist < 30) { // 点中红色目标
+            isDragging = true;
+        }
+    });
+
+    window.addEventListener('mouseup', () => isDragging = false);
+
+    window.addEventListener('mousemove', (e) => {
+        if (isDragging) {
+            const mouse = getMousePos(e);
+            target.x = invX(mouse.x);
+            target.y = invY(mouse.y);
+        }
+    });
+
+    // 姿态滑块
+    const angleSlider = document.getElementById('angleSlider');
+    const targetAngleTxt = document.getElementById('targetAngleTxt');
+    angleSlider.addEventListener('input', (e) => {
+        const deg = parseFloat(e.target.value);
+        targetAngleTxt.innerText = deg + '°';
+        target.phi = deg * Math.PI / 180;
+    });
+
+    // 重置按钮
+    document.getElementById('btnReset').addEventListener('click', () => {
+        q = [Math.PI/4, -Math.PI/2, -Math.PI/4];
+        target = { x: 4.0, y: 2.0, phi: 0 };
+        angleSlider.value = 0;
+        targetAngleTxt.innerText = '0°';
+    });
+
+    // 启动系统
+    requestAnimationFrame(draw);
+</script>
+</body>
+</html>
