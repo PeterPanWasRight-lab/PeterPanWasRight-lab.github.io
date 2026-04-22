@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>线性方程组最小范数解与空间正交几何可视化</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; color: #fff; font-family: sans-serif; }
+        #canvas-container { width: 100vw; height: 100vh; }
+        #ui-panel {
+            position: absolute; top: 20px; left: 20px;
+            background: rgba(30, 30, 30, 0.8);
+            padding: 20px; border-radius: 8px; border: 1px solid #444;
+            backdrop-filter: blur(5px); pointer-events: auto;
+        }
+        .control-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-size: 14px;}
+        input[type=range] { width: 100%; }
+        .checkbox-group { display: flex; align-items: center; margin-bottom: 8px; font-size: 13px;}
+        .checkbox-group input { margin-right: 8px; }
+    </style>
+</head>
+<body>
+    <div id="ui-panel">
+        <h3>Ax = b 最小范数解</h3>
+        <p style="font-size: 12px; color: #aaa;">
+            n1 = [1, 1, 1], n2 = [1, -1, 0]<br>
+            A = [n1; n2]
+        </p>
+        <div class="control-group">
+            <label>b1 (平面1偏移): <span id="b1-val">2.0</span></label>
+            <input type="range" id="b1" min="-5" max="5" step="0.1" value="2">
+        </div>
+        <div class="control-group">
+            <label>b2 (平面2偏移): <span id="b2-val">0.0</span></label>
+            <input type="range" id="b2" min="-5" max="5" step="0.1" value="0">
+        </div>
+        <hr style="border-color: #444;">
+        <div class="checkbox-group"><input type="checkbox" id="show-planes" checked> 显示方程平面 1 & 2</div>
+        <div class="checkbox-group"><input type="checkbox" id="show-normals" checked> 显示法向量 (n1, n2)</div>
+        <div class="checkbox-group"><input type="checkbox" id="show-rowspace" checked> 显示行空间平面 (过原点)</div>
+        <div class="checkbox-group"><input type="checkbox" id="show-solution" checked> 显示解空间 (交线)</div>
+        <div class="checkbox-group"><input type="checkbox" id="show-xr" checked> 显示最小范数解 (垂线)</div>
+    </div>
+    
+    <div id="canvas-container"></div>
+
+    <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // 1. 场景初始化
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(6, 4, 8);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.getElementById('canvas-container').appendChild(renderer.domElement);
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+
+        scene.add(new THREE.AxesHelper(5));
+        const gridHelper = new THREE.GridHelper(10, 10, 0x444444, 0x222222);
+        gridHelper.position.y = -0.01;
+        scene.add(gridHelper);
+
+        // 2. 数学参数
+        let b1 = 2.0, b2 = 0.0;
+        const n1 = new THREE.Vector3(1, 1, 1);
+        const n2 = new THREE.Vector3(1, -1, 0);
+        const nullDir = new THREE.Vector3().crossVectors(n1, n2).normalize();
+
+        // 材质与几何体
+        const matPlane1 = new THREE.MeshBasicMaterial({ color: 0x00aaff, transparent: true, opacity: 0.2, side: THREE.DoubleSide });
+        const matPlane2 = new THREE.MeshBasicMaterial({ color: 0xffaa00, transparent: true, opacity: 0.2, side: THREE.DoubleSide });
+        const matRowSpace = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.15, side: THREE.DoubleSide });
+        
+        const planeGeo = new THREE.PlaneGeometry(15, 15);
+        const meshPlane1 = new THREE.Mesh(planeGeo, matPlane1);
+        const meshPlane2 = new THREE.Mesh(planeGeo, matPlane2);
+        const meshRowSpace = new THREE.Mesh(planeGeo, matRowSpace);
+
+        const up = new THREE.Vector3(0, 0, 1);
+        meshPlane1.quaternion.setFromUnitVectors(up, n1.clone().normalize());
+        meshPlane2.quaternion.setFromUnitVectors(up, n2.clone().normalize());
+        meshRowSpace.quaternion.setFromUnitVectors(up, nullDir);
+        
+        scene.add(meshPlane1, meshPlane2, meshRowSpace);
+
+        // -- 新增：法向量箭头 (保持与平面同色) --
+        const n1Arrow = new THREE.ArrowHelper(n1.clone().normalize(), new THREE.Vector3(0,0,0), n1.length(), 0x00aaff, 0.3, 0.2);
+        const n2Arrow = new THREE.ArrowHelper(n2.clone().normalize(), new THREE.Vector3(0,0,0), n2.length(), 0xffaa00, 0.3, 0.2);
+        scene.add(n1Arrow, n2Arrow);
+
+        // 线条与最小范数解
+        const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 });
+        const solutionLine = new THREE.Line(new THREE.BufferGeometry(), lineMat);
+        scene.add(solutionLine);
+
+        const xrArrow = new THREE.ArrowHelper(new THREE.Vector3(1,0,0), new THREE.Vector3(0,0,0), 1, 0xff0055, 0.3, 0.2);
+        scene.add(xrArrow);
+        
+        const xrSphere = new THREE.Mesh(new THREE.SphereGeometry(0.15, 16, 16), new THREE.MeshBasicMaterial({ color: 0xff0055 }));
+        scene.add(xrSphere);
+
+        // 3. 核心计算更新函数
+        function updateGeometry() {
+            const d1 = b1 / n1.length();
+            meshPlane1.position.copy(n1.clone().normalize().multiplyScalar(d1));
+            
+            const d2 = b2 / n2.length();
+            meshPlane2.position.copy(n2.clone().normalize().multiplyScalar(d2));
+
+            const xr_x = b1/3 + b2/2;
+            const xr_y = b1/3 - b2/2;
+            const xr_z = b1/3;
+            const xr = new THREE.Vector3(xr_x, xr_y, xr_z);
+
+            xrSphere.position.copy(xr);
+            if(xr.length() > 0.01) {
+                xrArrow.setDirection(xr.clone().normalize());
+                xrArrow.setLength(xr.length(), 0.3, 0.2);
+                xrArrow.visible = document.getElementById('show-xr').checked;
+            } else {
+                xrArrow.visible = false;
+            }
+
+            const points = [];
+            points.push(xr.clone().add(nullDir.clone().multiplyScalar(-10)));
+            points.push(xr.clone().add(nullDir.clone().multiplyScalar(10)));
+            solutionLine.geometry.setFromPoints(points);
+        }
+
+        // 4. UI 交互绑定
+        document.getElementById('b1').addEventListener('input', (e) => { b1 = parseFloat(e.target.value); document.getElementById('b1-val').innerText = b1.toFixed(1); updateGeometry(); });
+        document.getElementById('b2').addEventListener('input', (e) => { b2 = parseFloat(e.target.value); document.getElementById('b2-val').innerText = b2.toFixed(1); updateGeometry(); });
+        
+        document.getElementById('show-planes').addEventListener('change', (e) => { meshPlane1.visible = meshPlane2.visible = e.target.checked; });
+        // 绑定新增的法向量复选框
+        document.getElementById('show-normals').addEventListener('change', (e) => { n1Arrow.visible = n2Arrow.visible = e.target.checked; });
+        document.getElementById('show-rowspace').addEventListener('change', (e) => { meshRowSpace.visible = e.target.checked; });
+        document.getElementById('show-solution').addEventListener('change', (e) => { solutionLine.visible = e.target.checked; });
+        document.getElementById('show-xr').addEventListener('change', (e) => { 
+            xrSphere.visible = e.target.checked;
+            xrArrow.visible = e.target.checked && new THREE.Vector3(b1/3 + b2/2, b1/3 - b2/2, b1/3).length() > 0.01;
+        });
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        updateGeometry();
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+    </script>
+</body>
+</html>
